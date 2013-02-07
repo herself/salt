@@ -576,8 +576,11 @@ def managed(name,
         line must consist of full name of the file and checksum separated by
         space:
 
-        /etc/rc.conf md5=ef6e82e4006dee563d98ada2a2a80a27
-        /etc/resolv.conf sha256=c8525aee419eb649f0233be91c151178b30f0dff8ebbdcc8de71b1d5c8bcc06a
+        Example::
+
+            /etc/rc.conf md5=ef6e82e4006dee563d98ada2a2a80a27
+            /etc/resolv.conf sha256=c8525aee419eb649f0233be91c151178b30f0dff8ebbdcc8de71b1d5c8bcc06a
+
 
     user
         The user to own the file, this defaults to the user salt is running as
@@ -804,9 +807,8 @@ def directory(name,
             else:
                 return _error(
                     ret, 'No directory to create {0} in'.format(name))
-    if not os.path.isdir(name):
-        __salt__['file.makedirs'](name, user=user, group=group, mode=mode)
         os.makedirs(name)
+        ret['changes'][name] = 'New Dir'
     if not os.path.isdir(name):
         return _error(ret, 'Failed to create directory {0}'.format(name))
 
@@ -856,44 +858,23 @@ def directory(name,
                     # Remove 'group' from list of recurse targets
                     targets = list(x for x in targets if x != 'group')
 
-            needs_fixed = {}
-            if targets:
-                file_tree = __salt__['file.find'](name)
-                for path in file_tree:
-                    fstat = os.lstat(path)
-                    if 'user' in targets and fstat.st_uid != uid:
-                        needs_fixed['user'] = True
-                        if needs_fixed.get('group'):
-                            break
-                    if 'group' in targets and fstat.st_gid != gid:
-                        needs_fixed['group'] = True
-                        if needs_fixed.get('user'):
-                            break
-
-            if needs_fixed.get('user'):
-                # Make sure the 'recurse' subdict exists
-                ret['changes'].setdefault('recurse', {})
-                if 'user' in targets:
-                    if __salt__['cmd.retcode']('chown -R {0} "{1}"'.format(
-                            user, name)) != 0:
-                        ret['result'] = False
-                        ret['comment'] = 'Failed to enforce ownership on ' \
-                                         '{0} for user {1}'.format(name, group)
-                    else:
-                        ret['changes']['recurse']['user'] = \
-                                __salt__['file.uid_to_user'](uid)
-            if needs_fixed.get('group'):
-                ret['changes'].setdefault('recurse', {})
-                if 'group' in targets:
-                    if __salt__['cmd.retcode']('chown -R :{0} "{1}"'.format(
-                            group, name)) != 0:
-                        ret['result'] = False
-                        ret['comment'] = 'Failed to enforce group ownership ' \
-                                         'on {0} for group ' \
-                                         '{1}'.format(name, group)
-                    else:
-                        ret['changes']['recurse']['group'] = \
-                                __salt__['file.gid_to_group'](gid)
+            for root, dirs, files in os.walk(name):
+                for fn_ in files:
+                    full = os.path.join(root, fn_)
+                    ret, perms = __salt__['file.check_perms'](
+                            full,
+                            ret,
+                            user,
+                            group,
+                            mode)
+                for dir_ in dirs:
+                    full = os.path.join(root, dir_)
+                    ret, perms = __salt__['file.check_perms'](
+                            full,
+                            ret,
+                            user,
+                            group,
+                            mode)
 
     if clean:
         keep = _gen_keep_files(name, require)
@@ -1133,13 +1114,16 @@ def recurse(name,
 
     keep = set()
     vdir = set()
-    for fn_ in __salt__['cp.cache_dir'](source, env, include_empty):
+    for fn_ in __salt__['cp.list_master'](env):
         if not fn_.strip():
+            continue
+        srcpath = source[7:]
+        if not fn_.startswith(srcpath):
             continue
         # fn_ here is the absolute source path of the file to copy from;
         # it is either a normal file or an empty dir(if include_empty==true).
 
-        dest = _get_recurse_dest(name, fn_, source, env)
+        dest = os.path.join(name, os.path.relpath(fn_, srcpath))
         #- Check if it is to be excluded. Match only trailing part of the path
         # after base directory
         if not _check_include_exclude(dest[len(name):], include_pat, exclude_pat):
@@ -1152,12 +1136,14 @@ def recurse(name,
             manage_directory(dirname)
             vdir.add(dirname)
 
-        if os.path.isdir(fn_) and include_empty:
-            #create empty dir
-            manage_directory(dest)
-        else:
-            src = source + _get_recurse_dest('/', fn_, source, env)
-            manage_file(dest, src)
+        src = 'salt://{0}'.format(fn_)
+        manage_file(dest, src)
+
+    if include_empty:
+        mdirs = __salt__['cp.list_master_dirs'](env)
+        for mdir in mdirs:
+            mdest = os.path.join(name, os.path.relpath(mdir, srcpath))
+            manage_directory(mdest)
 
     keep = list(keep)
     if clean:

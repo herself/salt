@@ -82,7 +82,7 @@ def available_version(*names):
         installed = _cpv_to_version(_vartree().dep_bestmatch(name))
         avail = _cpv_to_version(_porttree().dep_bestmatch(name))
         if avail:
-            if not installed or compare(installed, avail) == -1:
+            if not installed or compare(pkg1=installed, oper='<', pkg2=avail):
                 ret[name] = avail
 
     # Return a string if only one package name passed
@@ -277,7 +277,7 @@ def install(name=None,
                        'new': '<new-version>'}}
     '''
 
-    logging.debug('Called modules.pkg.install: {0}'.format(
+    log.debug('Called modules.pkg.install: {0}'.format(
         {
             'name': name,
             'refresh': refresh,
@@ -290,16 +290,18 @@ def install(name=None,
     if refresh is True or str(refresh).lower() == 'true':
         refresh_db()
 
-    # Handle version kwarg
-    if pkgs is None and sources is None:
-        if kwargs.get('version'):
-            name = '={0}-{1}'.format(name, kwargs.get('version'))
-        elif slot is not None:
-            name = '{0}:{1}'.format(name, slot)
-
     pkg_params, pkg_type = __salt__['pkg_resource.parse_targets'](name,
                                                                   pkgs,
                                                                   sources)
+
+    # Handle version kwarg for a single package target
+    if pkgs is None and sources is None:
+        version = kwargs.get('version')
+        if version:
+            pkg_params = {name: version}
+        elif slot is not None:
+            pkg_params = {name: ':{0}'.format(slot)}
+
     if pkg_params is None or len(pkg_params) == 0:
         return {}
     elif pkg_type == 'file':
@@ -307,7 +309,26 @@ def install(name=None,
     else:
         emerge_opts = ''
 
-    cmd = 'emerge --quiet {0} {1}'.format(emerge_opts, ' '.join(pkg_params))
+    if pkg_type == 'repository':
+        targets = list()
+        for param, version in pkg_params.iteritems():
+            if version is None:
+                targets.append(param)
+            elif version.startswith(':'):
+                # Really this 'version' is a slot
+                targets.append('{0}{1}'.format(param, version))
+            else:
+                match = re.match('^([<>])?(=)?([^<>=]+)$', version)
+                if match:
+                    gt_lt, eq, verstr = match.groups()
+                    prefix = gt_lt or ''
+                    prefix += eq or ''
+                    # If no prefix characters were supplied, use '='
+                    prefix = prefix or '='
+                    targets.append('"{0}{1}-{2}"'.format(prefix, param, verstr))
+    else:
+        targets = pkg_params
+    cmd = 'emerge --quiet {0} {1}'.format(emerge_opts, ' '.join(targets))
     old = list_pkgs()
     stderr = __salt__['cmd.run_all'](cmd).get('stderr', '')
     if stderr:
@@ -479,14 +500,27 @@ def depclean(pkg=None, slot=None):
     return ret_pkgs
 
 
-def compare(version1='', version2=''):
+def perform_cmp(pkg1='', pkg2=''):
     '''
-    Compare two version strings. Return -1 if version1 < version2,
-    0 if version1 == version2, and 1 if version1 > version2. Return None if
-    there was a problem making the comparison.
+    Do a cmp-style comparison on two packages. Return -1 if pkg1 < pkg2, 0 if
+    pkg1 == pkg2, and 1 if pkg1 > pkg2. Return None if there was a problem
+    making the comparison.
 
     CLI Example::
 
-        salt '*' pkg.compare '0.2.4-0' '0.2.4.1-0'
+        salt '*' pkg.perform_cmp '0.2.4-0' '0.2.4.1-0'
+        salt '*' pkg.perform_cmp pkg1='0.2.4-0' pkg2='0.2.4.1-0'
     '''
-    return __salt__['pkg_resource.compare'](version1, version2)
+    return __salt__['pkg_resource.perform_cmp'](pkg1=pkg1, pkg2=pkg2)
+
+
+def compare(pkg1='', oper='==', pkg2=''):
+    '''
+    Compare two version strings.
+
+    CLI Example::
+
+        salt '*' pkg.compare '0.2.4-0' '<' '0.2.4.1-0'
+        salt '*' pkg.compare pkg1='0.2.4-0' oper='<' pkg2='0.2.4.1-0'
+    '''
+    return __salt__['pkg_resource.compare'](pkg1=pkg1, oper=oper, pkg2=pkg2)

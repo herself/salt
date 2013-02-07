@@ -9,9 +9,6 @@ module can be overwritten just by returning dict keys with the same value
 as those returned here
 '''
 
-# TODO: This needs some refactoring, I made it "as fast as I could" and could
-# be a lot clearer, so far it is spaghetti code
-
 # Import python libs
 import os
 import socket
@@ -25,7 +22,7 @@ import locale
 # /etc/DISTRO-release checking that is part of platform.linux_distribution()
 from platform import _supported_dists
 _supported_dists += ('arch', 'mageia', 'meego', 'vmware', 'bluewhite64',
-                     'slamd64', 'enterprise', 'ovs', 'system')
+                     'slamd64', 'ovs', 'system', 'mint', 'oracle')
 
 # Import salt libs
 import salt.log
@@ -299,6 +296,8 @@ def _virtual(osdata):
 
         if ret['retcode'] > 0:
             if salt.log.is_logging_configured():
+                if salt.utils.is_windows():
+                    continue
                 log.warn(
                     'Although \'{0}\' was found in path, the current user '
                     'cannot execute it. Grains output might not be '
@@ -504,8 +503,10 @@ _OS_NAME_MAP = {
     'arch': 'Arch',
     'debian': 'Debian',
     'debiangnu/': 'Debian',
-    'fedoraremi': 'RedHat',
-    'amazonami': 'RedHat',
+    'fedoraremi': 'Fedora',
+    'amazonami': 'Amazon',
+    'alt': 'ALT',
+    'oracleserv': 'OEL',
 }
 
 # Map the 'os' grain to the 'os_family' grain
@@ -524,6 +525,7 @@ _OS_FAMILY_MAP = {
     'OEL': 'RedHat',
     'Mandrake': 'Mandriva',
     'ESXi': 'VMWare',
+    'Mint': 'Debian',
     'VMWareESX': 'VMWare',
     'Bluewhite64': 'Bluewhite',
     'Slamd64': 'Slackware',
@@ -536,6 +538,7 @@ _OS_FAMILY_MAP = {
     'Solaris': 'Solaris',
     'SmartOS': 'Solaris',
     'Arch ARM': 'Arch',
+    'ALT': 'RedHat',
 }
 
 
@@ -607,6 +610,21 @@ def os_data():
                             name, value = match.groups()
                             if name.lower() == 'name':
                                 grains['lsb_distrib_id'] = value.strip()
+            elif os.path.isfile('/etc/altlinux-release'):
+                # ALT Linux
+                grains['lsb_distrib_id'] = 'altlinux'
+                with salt.utils.fopen('/etc/altlinux-release') as ifile:
+                    # This file is symlinked to from:
+                    #     /etc/fedora-release
+                    #     /etc/redhat-release
+                    #     /etc/system-release
+                    for line in ifile:
+                        # ALT Linux Sisyphus (unstable)
+                        comps = line.split()
+                        if comps[0] == 'ALT':
+                            grains['lsb_distrib_release'] = comps[2]
+                            grains['lsb_distrib_codename'] = \
+                                comps[3].replace('(','').replace(')','')
         # Use the already intelligent platform module to get distro info
         (osname, osrelease, oscodename) = platform.linux_distribution(
             supported_dists=_supported_dists)

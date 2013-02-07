@@ -35,13 +35,10 @@ def get_file_client(opts):
     Read in the ``file_client`` option and return the correct type of file
     server
     '''
-    try:
-        return {
-                'remote': RemoteClient,
-                'local': LocalClient
-               }.get(opts['file_client'], 'remote')(opts)
-    except KeyError:
-        return RemoteClient(opts)
+    return {
+            'remote': RemoteClient,
+            'local': LocalClient
+           }.get(opts['file_client'], RemoteClient)(opts)
 
 
 class Client(object):
@@ -69,12 +66,12 @@ class Client(object):
         else:
             destdir = os.path.dirname(dest)
 
-        filelist = []
+        filelist = set()
 
         for root, dirs, files in os.walk(destdir, followlinks=True):
             for name in files:
                 path = os.path.join(root, name)
-                filelist.append(path)
+                filelist.add(path)
 
         return filelist
 
@@ -196,8 +193,9 @@ class Client(object):
         filesdest = os.path.join(self.opts['cachedir'], 'files', env)
         localfilesdest = os.path.join(self.opts['cachedir'], 'localfiles')
 
-        return sorted(self._file_local_list(filesdest) +
-                self._file_local_list(localfilesdest))
+        fdest = self._file_local_list(filesdest)
+        ldest = self._file_local_list(localfilesdest)
+        return sorted(fdest.union(ldest))
 
     def file_list(self, env='base'):
         '''

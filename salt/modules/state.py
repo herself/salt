@@ -27,6 +27,19 @@ __outputter__ = {
 log = logging.getLogger(__name__)
 
 
+def __resolve_struct(value, kwval_as):
+    '''
+    Take a string representing a structure and safely serialize it with the
+    specified medium
+    '''
+    if kwval_as == 'yaml':
+        return  _yaml_load(value, _YamlCustomLoader)
+    elif kwval_as == 'json':
+        return json.loads(value)
+    elif kwval_as is None or kwval_as == 'verbatim':
+        return value
+
+
 def running():
     '''
     Return a dict of state return data if a state function is already running.
@@ -132,8 +145,13 @@ def highstate(test=None, **kwargs):
     if not test is None:
         opts['test'] = test
 
-    st_ = salt.state.HighState(opts)
-    ret = st_.call_highstate()
+    pillar = __resolve_struct(
+            kwargs.get('pillar', ''),
+            kwargs.get('kwval_as', 'yaml'))
+
+    st_ = salt.state.HighState(opts, pillar)
+    salt.state.HighState.current = st_
+    ret = st_.call_highstate(exclude=kwargs.get('exclude', []))
     serial = salt.payload.Serial(__opts__)
     cache_file = os.path.join(__opts__['cachedir'], 'highstate.p')
 
@@ -149,7 +167,7 @@ def highstate(test=None, **kwargs):
     return ret
 
 
-def sls(mods, env='base', test=None, **kwargs):
+def sls(mods, env='base', test=None, exclude=None, **kwargs):
     '''
     Execute a set list of state modules from an environment, default
     environment is base
@@ -166,8 +184,12 @@ def sls(mods, env='base', test=None, **kwargs):
     if not test is None:
         opts['test'] = test
 
+    pillar = __resolve_struct(
+            kwargs.get('pillar', ''),
+            kwargs.get('kwval_as', 'yaml'))
+
     salt.utils.daemonize_if(opts, **kwargs)
-    st_ = salt.state.HighState(opts)
+    st_ = salt.state.HighState(opts, pillar)
 
     if isinstance(mods, string_types):
         mods = mods.split(',')
@@ -177,6 +199,13 @@ def sls(mods, env='base', test=None, **kwargs):
     if errors:
         return errors
 
+    if exclude:
+        if isinstance(exclude, str):
+            exclude = exclude.split(',')
+        if '__exclude__' in high:
+            high['__exclude__'].extend(exclude)
+        else:
+            high['__exclude__'] = exclude
     ret = st_.state.call_high(high)
     serial = salt.payload.Serial(__opts__)
     cache_file = os.path.join(__opts__['cachedir'], 'sls.p')
@@ -311,6 +340,8 @@ def single(fun, name, test=None, kwval_as='yaml', **kwargs):
     elif kwval_as == 'json':
         def parse_kwval(value):
             return json.loads(value)
+    elif kwval_as is None or kwval_as == 'verbatim':
+        parse_kwval = lambda value: value
     else:
         return 'Unknown format({0}) for state keyword arguments!'.format(
                 kwval_as)

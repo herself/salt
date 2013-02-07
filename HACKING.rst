@@ -110,7 +110,7 @@ Install Salt (and dependencies) into the virtualenv::
 
     pip install M2Crypto    # Don't install on Debian/Ubuntu (see below)
     pip install pyzmq PyYAML pycrypto msgpack-python jinja2 psutil
-    pip install -e ./salt       # the path to the salt git clone from above
+    pip install -e ./salt   # the path to the salt git clone from above (or . if you're already in that directory)
 
 .. note:: Installing M2Crypto
 
@@ -146,10 +146,35 @@ Install Salt (and dependencies) into the virtualenv::
     your virtualenv using the ``--system-site-packages`` option so that these
     modules are available in the virtualenv.
 
+    M2Crypto also supplies a fedora_setup.sh script you may use as well if you
+    get the following error:
+
+        This openssl-devel package does not work your architecture?. Use the -cpperraswarn option to continue swig processing.
+
+    You can use it doing the following:
+
+        cd <path-to-your-venv>/build/M2Crypto
+        chmod u+x fedora_setup.sh
+        ./fedora_setup.sh build
+        ./fedora_setup.sh install
+
+
 .. _`RHEL`: https://www.redhat.com/products/enterprise-linux/
 .. _`CentOS`: http://centos.org/
 .. _`Fedora Linux`: http://fedoraproject.org/
 .. _`Amazon Linux`: https://aws.amazon.com/amazon-linux-ami/
+
+.. note:: Installing dependencies on OS X.
+
+One simple way to get all needed dependencies on OS X is to use homebrew,
+and install the following packages::
+
+    brew install swig
+    brew install zmq
+
+Afterward the pip commands should run without a hitch. Also be sure to set
+max_open_files to 2048 (see below).
+
 Running a self-contained development version
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -173,6 +198,7 @@ Edit the master config file:
     ``/path/to/your/virtualenv/salt-master.pid``.
 4.  If you are also running a non-development version of Salt you will have to
     change the ``publish_port`` and ``ret_port`` values as well.
+5. On OS X also set max_open_files to 2048.
 
 Edit the minion config file:
 

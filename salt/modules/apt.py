@@ -86,12 +86,15 @@ def available_version(*names):
         candidate = __salt__['cmd.run_stdout'](cmd).split()
         if len(candidate) >= 2:
             candidate = candidate[-1]
+            if candidate.lower() == '(none)':
+                candidate = ''
         else:
             candidate = ''
 
         installed = pkgs.get(name, '')
         if candidate:
-            if not installed or compare(installed, candidate) == -1:
+            if not installed or compare(pkg1=installed, oper='<',
+                                        pkg2=candidate):
                 ret[name] = candidate
 
     # Return a string if only one package name passed
@@ -127,34 +130,44 @@ def refresh_db():
     '''
     Updates the APT database to latest packages based upon repositories
 
-    Returns a dict::
+    Returns a dict, with the keys being package databases and the values being
+    the result of the update attempt. Values can be one of the following:
 
-        {'<database name>': Bool}
+        ``True``: Database updated successfully
+        ``False``: Problem updating database
+        ``None``: Database already up-to-date
 
     CLI Example::
 
         salt '*' pkg.refresh_db
     '''
+    ret = {}
     cmd = 'apt-get -q update'
-
-    out = __salt__['cmd.run_stdout'](cmd)
-
-    servers = {}
-    for line in out:
+    lines = __salt__['cmd.run_stdout'](cmd).splitlines()
+    for line in lines:
         cols = line.split()
-        if not len(cols):
+        if not cols:
             continue
-        ident = ' '.join(cols[1:4])
+        ident = ' '.join(cols[1:])
         if 'Get' in cols[0]:
-            servers[ident] = True
-        else:
-            servers[ident] = False
+            # Strip filesize from end of line
+            ident = re.sub(' \[.+B\]$', '', ident)
+            ret[ident] = True
+        elif cols[0] == 'Ign':
+            ret[ident] = False
+        elif cols[0] == 'Hit':
+            ret[ident] = None
+    return ret
 
-    return servers
 
-
-def install(name=None, refresh=False, fromrepo=None, skip_verify=False,
-            debconf=None, pkgs=None, sources=None, **kwargs):
+def install(name=None,
+            refresh=False,
+            fromrepo=None,
+            skip_verify=False,
+            debconf=None,
+            pkgs=None,
+            sources=None,
+            **kwargs):
     '''
     Install the passed package, add refresh=True to update the dpkg database.
 
@@ -184,7 +197,7 @@ def install(name=None, refresh=False, fromrepo=None, skip_verify=False,
         installation.
 
     version
-        Install a specific version of the package, e.g. 1.0.9~ubuntu. Ignored
+        Install a specific version of the package, e.g. 1.2.3~0ubuntu0. Ignored
         if "pkgs" or "sources" is passed.
 
 
@@ -195,7 +208,8 @@ def install(name=None, refresh=False, fromrepo=None, skip_verify=False,
         passed as a python list.
 
         CLI Example::
-            salt '*' pkg.install pkgs='["foo","bar"]'
+            salt '*' pkg.install pkgs='["foo", "bar"]'
+            salt '*' pkg.install pkgs='["foo", {"bar": "1.2.3-0ubuntu0"}]'
 
     sources
         A list of DEB packages to install. Must be passed as a list of dicts,
@@ -246,12 +260,14 @@ def install(name=None, refresh=False, fromrepo=None, skip_verify=False,
             pkg=' '.join(pkg_params),
         )
     elif pkg_type == 'repository':
-        fname = ' '.join(pkg_params)
-        if len(pkg_params) == 1:
-            for vkey, vsign in (('eq', '='), ('version', '=')):
-                if kwargs.get(vkey) is not None:
-                    fname = '"{0}{1}{2}"'.format(fname, vsign, kwargs[vkey])
-                    break
+        if pkgs is None and kwargs.get('version'):
+            pkg_params = {name: kwargs.get('version')}
+        targets = []
+        for param, version in pkg_params.iteritems():
+            if version is None:
+                targets.append(param)
+            else:
+                targets.append('"{0}={1}"'.format(param, version))
         if fromrepo:
             log.info('Targeting repo "{0}"'.format(fromrepo))
         cmd = 'apt-get -q -y {confold} {confdef} {verify} {target} install ' \
@@ -260,7 +276,7 @@ def install(name=None, refresh=False, fromrepo=None, skip_verify=False,
                   confdef='-o DPkg::Options::=--force-confdef',
                   verify='--allow-unauthenticated' if skip_verify else '',
                   target='-t {0}'.format(fromrepo) if fromrepo else '',
-                  pkg=fname,
+                  pkg=' '.join(targets),
               )
 
     old = list_pkgs()
@@ -357,7 +373,8 @@ def upgrade(refresh=True, **kwargs):
 
     ret_pkgs = {}
     old_pkgs = list_pkgs()
-    cmd = 'apt-get -q -y -o DPkg::Options::=--force-confold -o DPkg::Options::=--force-confdef dist-upgrade'
+    cmd = ('apt-get -q -y -o DPkg::Options::=--force-confold '
+           '-o DPkg::Options::=--force-confdef dist-upgrade')
     __salt__['cmd.run'](cmd)
     new_pkgs = list_pkgs()
 
@@ -488,30 +505,77 @@ def upgrade_available(name):
     return available_version(name) != ''
 
 
-def compare(version1='', version2=''):
+def perform_cmp(pkg1='', pkg2=''):
     '''
-    Compare two version strings. Return -1 if version1 < version2,
-    0 if version1 == version2, and 1 if version1 > version2. Return None if
-    there was a problem making the comparison.
+    Do a cmp-style comparison on two packages. Return -1 if pkg1 < pkg2, 0 if
+    pkg1 == pkg2, and 1 if pkg1 > pkg2. Return None if there was a problem
+    making the comparison.
 
     CLI Example::
 
-        salt '*' pkg.compare '0.2.4-0ubuntu1' '0.2.4.1-0ubuntu1'
+        salt '*' pkg.perform_cmp '0.2.4-0ubuntu1' '0.2.4.1-0ubuntu1'
+        salt '*' pkg.perform_cmp pkg1='0.2.4-0ubuntu1' pkg2='0.2.4.1-0ubuntu1'
     '''
     try:
         for oper, ret in (('lt', -1), ('eq', 0), ('gt', 1)):
             cmd = 'dpkg --compare-versions "{0}" {1} ' \
-                  '"{2}"'.format(version1, oper, version2)
+                  '"{2}"'.format(pkg1, oper, pkg2)
             if __salt__['cmd.retcode'](cmd) == 0:
                 return ret
     except Exception as e:
         log.error(e)
     return None
 
+
+def compare(pkg1='', oper='==', pkg2=''):
+    '''
+    Compare two version strings.
+
+    CLI Example::
+
+        salt '*' pkg.compare '0.2.4-0' '<' '0.2.4.1-0'
+        salt '*' pkg.compare pkg1='0.2.4-0' oper='<' pkg2='0.2.4.1-0'
+    '''
+    return __salt__['pkg_resource.compare'](pkg1=pkg1, oper=oper, pkg2=pkg2)
+
+
 def _split_repo_str(repo):
-    splitter = sourceslist.SourceEntry('')
-    split = splitter.mysplit(repo)
-    return split[0], split[1], split[2], split[3:]
+    split = sourceslist.SourceEntry(repo)
+    return split.type, split.uri, split.dist, split.comps
+
+
+def _consolidate_repo_sources(sources):
+    if not isinstance(sources, sourceslist.SourcesList):
+        raise TypeError('"{0}" not a "{1}"'.format(type(sources),
+                                                   sourceslist.SourcesList))
+
+    consolidated = {}
+    delete_files = set()
+    base_file = sourceslist.SourceEntry('').file
+
+    repos = filter(lambda s: not s.invalid, sources.list)
+
+    for r in repos:
+        key = str((r.architectures, r.disabled, r.type, r.uri))
+        if key in consolidated:
+            combined = consolidated[key]
+            combined_comps = set(r.comps).union(set(combined.comps))
+            consolidated[key].comps = list(combined_comps)
+        else:
+            consolidated[key] = sourceslist.SourceEntry(r.line)
+
+        if r.file != base_file:
+            delete_files.add(r.file)
+
+    sources.list = consolidated.values()
+    sources.save()
+    for f in delete_files:
+        try:
+            os.remove(f)
+        except:
+            pass
+    return sources
+
 
 def list_repos():
     '''
@@ -541,6 +605,7 @@ def list_repos():
         repo['architectures'] = source.architectures
         repos.setdefault(source.uri, []).append(repo)
     return repos
+
 
 def get_repo(repo):
     '''
@@ -579,14 +644,15 @@ def get_repo(repo):
             for sub in source:
                 if (sub['type'] == repo_type and
                     sub['uri'] == repo_uri and
-                    sub['dist'] == repo_dist):
+                        sub['dist'] == repo_dist):
                     if not repo_comps:
-                       return sub
+                        return sub
                     for comp in repo_comps:
                         if comp in sub.get('comps', []):
                             return sub
 
     raise Exception('repo "{0}" was not found'.format(repo))
+
 
 def del_repo(repo, refresh=False):
     '''
@@ -629,7 +695,7 @@ def del_repo(repo, refresh=False):
 
         for source in repos:
             if (source.type == repo_type and source.uri == repo_uri and
-                source.dist == repo_dist):
+                    source.dist == repo_dist):
 
                 s_comps = set(source.comps)
                 r_comps = set(repo_comps)
@@ -643,8 +709,8 @@ def del_repo(repo, refresh=False):
                             pass
             # PPAs are special and can add deb-src where expand_ppa_line doesn't
             # always reflect this.  Lets just cleanup here for good measure
-            if (is_ppa and repo_type == 'deb' and  source.type == 'deb-src' and
-                source.uri == repo_uri and source.dist == repo_dist):
+            if (is_ppa and repo_type == 'deb' and source.type == 'deb-src' and
+                    source.uri == repo_uri and source.dist == repo_dist):
 
                 s_comps = set(source.comps)
                 r_comps = set(repo_comps)
@@ -660,13 +726,14 @@ def del_repo(repo, refresh=False):
         if deleted_from:
             ret = ''
             for source in sources:
-                if deleted_from.has_key(source.file):
+                if source.file in deleted_from:
                     deleted_from[source.file] += 1
-            for repo_file,c in deleted_from.iteritems():
+            for repo_file, c in deleted_from.iteritems():
                 msg = 'Repo "{0}" has been removed from {1}.\n'
                 if c == 0 and 'sources.list.d/' in repo_file:
                     if os.path.isfile(repo_file):
-                        msg = 'File {1} containing repo "{0}" has been removed.\n'
+                        msg = ('File {1} containing repo "{0}" has been '
+                               'removed.\n')
                         try:
                             os.remove(repo_file)
                         except OSError, e:
@@ -678,6 +745,7 @@ def del_repo(repo, refresh=False):
 
     return "Repo {0} doesn't exist in the sources.list(s)".format(repo)
 
+
 def mod_repo(repo, refresh=False, **kwargs):
     '''
     Modify one or more values for a repo.  If the repo does not exist, it will
@@ -687,10 +755,13 @@ def mod_repo(repo, refresh=False, **kwargs):
 
     The following options are available to modify a repo definition::
 
-        uri (the uri of the repo, e.g. deb http://archive.ubuntu.com/ubuntu)
         comps (a comma separated list of components for the repo, e.g. "main")
         file (a file name to be used)
         refresh (refresh the apt sources db when the mod is done)
+        keyserver (keyserver to get gpg key from)
+        keyid (key id to load with the keyserver argument)
+        key_url (URl to a gpg key to add to the apt gpg keyring)
+        consolidate (if true, will attempt to de-dup and consolidate sources)
 
     CLI Examples::
 
@@ -698,15 +769,16 @@ def mod_repo(repo, refresh=False, **kwargs):
         salt '*' pkg.mod_repo 'myrepo definition' comps=main,universe
     '''
     if not apt_support:
-        return 'Error: aptsources.sourceslist python module not found'
+        raise ImportError('Error: aptsources.sourceslist module not found')
 
     # to ensure no one sets some key values that _shouldn't_ be changed on the
     # object itself, this is just a white-list of "ok" to set properties
-    _MODIFY_OK = set(['uri', 'comps', 'architectures', 'disabled', 'file', 'dist'])
+    _MODIFY_OK = set(
+        ['uri', 'comps', 'architectures', 'disabled', 'file', 'dist'])
     if repo.startswith('ppa:') and __grains__['os'] == 'Ubuntu':
         if not ppa_format_support:
             error_str = 'cannot parse "ppa:" style repo definitions: {0}'
-            return error_str.format(repo)
+            raise Exception(error_str.format(repo))
         ppa = expand_ppa_line(repo, __grains__['lsb_codename'])[0]
         cmd = 'apt-add-repository -y {0}'.format(repo)
         out = __salt__['cmd.run_stdout'](cmd)
@@ -715,29 +787,71 @@ def mod_repo(repo, refresh=False, **kwargs):
         return {repo: out}
     else:
         sources = sourceslist.SourcesList()
+        if kwargs.get('consolidate', False):
+            # attempt to de-dup and consolidate all sources
+            # down to entries in sources.list
+            # this option makes it easier to keep the sources
+            # list in a "sane" state.
+            #
+            # this should remove duplicates, consolidate comps
+            # for a given source down to one line
+            # and eliminate "invalid" and comment lines
+            #
+            # the second side effect is removal of files
+            # that are not the main sources.list file
+            sources = _consolidate_repo_sources(sources)
+
         repos = filter(lambda s: not s.invalid, sources)
         if repos:
             mod_source = None
             try:
-                repo_type, repo_uri, repo_dist, repo_comps = _split_repo_str(repo)
+                repo_type, repo_uri, repo_dist, repo_comps = _split_repo_str(
+                    repo)
             except SyntaxError:
                 error_str = 'Error: repo "{0}" not a well formatted definition'
-                return error_str.format(repo)
+                raise SyntaxError(error_str.format(repo))
 
-            for source in repos:
-                if (source.type == repo_type and source.uri == repo_uri and
-                    source.dist == repo_dist):
+            full_comp_list = set(repo_comps)
 
-                    for comp in repo_comps:
-                        if comp in getattr(source, 'comps', []):
-                            mod_source = source
-                    if not source.comps:
-                        mod_source = source
-                    if mod_source:
-                        break
-  
+            if 'keyid' in kwargs:
+                keyid = kwargs.pop('keyid', None)
+                ks = kwargs.pop('keyserver', None)
+                if not keyid or not ks:
+                    error_str = 'both keyserver and keyid options required.'
+                    raise NameError(error_str)
+                cmd = 'apt-key export {0}'.format(keyid)
+                output = __salt__['cmd.run_stdout'](cmd)
+                imported = output.startswith('-----BEGIN PGP')
+                if ks:
+                    cmd = 'apt-key export {0}'.format(keyid)
+                    output = __salt__['cmd.run_stdout'](cmd)
+                    if not imported:
+                        cmd = ('apt-key adv --keyserver {0} --logger-fd 1 '
+                               '--recv-keys {1}')
+                        out = __salt__['cmd.run_stdout'](cmd.format(ks, keyid))
+                        if not out.find('imported') or out.find('not changed'):
+                            error_str = 'Error: key retrieval failed: {0}'
+                            raise Exception(
+                                error_str.format(
+                                    cmd.format(
+                                        ks,
+                                        keyid
+                                    )
+                                )
+                            )
+            elif 'key_url' in kwargs:
+                key_url = kwargs.pop('key_url', None)
+                cmd = 'wget -q -O- {0} | apt-key add -'.format(key_url)
+                out = __salt__['cmd.run_stdout'](cmd)
+                if not out.upper().startswith('OK'):
+                    error_str = 'Error: key retrieval failed: {0}'
+                    raise Exception(error_str.format(cmd.format(key_url)))
+
             if 'comps' in kwargs:
                 kwargs['comps'] = kwargs['comps'].split(',')
+                full_comp_list.union(set(kwargs['comps']))
+            else:
+                kwargs['comps'] = list(full_comp_list)
 
             if 'architecturess' in kwargs:
                 kwargs['architectures'] = kwargs['architectures'].split(',')
@@ -748,7 +862,29 @@ def mod_repo(repo, refresh=False, **kwargs):
                     kwargs['disabled'] = True
                 else:
                     kwargs['disabled'] = False
- 
+
+            kw_type = kwargs.get('type')
+            kw_uri = kwargs.get('uri')
+            kw_dist = kwargs.get('dist')
+
+            for source in repos:
+                # This series of checks will identify the starting source line
+                # and the resulting source line.  The idea here is to ensure
+                # we are not retuning bogus data because the source line
+                # has already been modified on a previous run.
+                if ((source.type == repo_type and source.uri == repo_uri
+                     and source.dist == repo_dist) or
+                    (source.dist == kw_dist and source.type == kw_type
+                     and source.type == kw_type)):
+
+                    for comp in full_comp_list:
+                        if comp in getattr(source, 'comps', []):
+                            mod_source = source
+                    if not source.comps:
+                        mod_source = source
+                    if mod_source:
+                        break
+
             if not mod_source:
                 mod_source = sourceslist.SourceEntry(repo)
                 sources.list.append(mod_source)
@@ -757,18 +893,18 @@ def mod_repo(repo, refresh=False, **kwargs):
             # match, it is important we keep the comps
             # not destined to be disabled/enabled in
             # the original state
-            if ('disabled' in kwargs and 
-                mod_source.disabled != kwargs['disabled']):
+            if ('disabled' in kwargs and
+                    mod_source.disabled != kwargs['disabled']):
 
                 s_comps = set(mod_source.comps)
                 r_comps = set(repo_comps)
                 if s_comps.symmetric_difference(r_comps):
-                   new_source = sourceslist.SourceEntry(source.line)
-                   new_source.file = source.file
-                   new_source.comps = list(r_comps.difference(s_comps))
-                   source.comps = list(s_comps.difference(r_comps))
-                   sources.insert(sources.index(source), new_source)
-                   sources.save()
+                    new_source = sourceslist.SourceEntry(source.line)
+                    new_source.file = source.file
+                    new_source.comps = list(r_comps.difference(s_comps))
+                    source.comps = list(s_comps.difference(r_comps))
+                    sources.insert(sources.index(source), new_source)
+                    sources.save()
 
             for key in kwargs:
                 if key in _MODIFY_OK and hasattr(mod_source, key):
@@ -777,13 +913,43 @@ def mod_repo(repo, refresh=False, **kwargs):
             sources.save()
             if refresh is True or str(refresh).lower() == 'true':
                 refresh_db()
-            return { repo: {
-                     'architectures': mod_source.architectures,
-                     'comps': mod_source.comps,
-                     'disabled': mod_source.disabled,
-                     'file': mod_source.file,
-                     'type': mod_source.type,
-                     'uri': mod_source.uri, 
-                     'line': mod_source.line,
-                     }
-                   }
+            return {repo: {
+                    'architectures': mod_source.architectures,
+                    'comps': mod_source.comps,
+                    'disabled': mod_source.disabled,
+                    'file': mod_source.file,
+                    'type': mod_source.type,
+                    'uri': mod_source.uri,
+                    'line': mod_source.line,
+                    }
+                    }
+
+
+def file_list(*packages):
+    '''
+    List the files that belong to a package. Not specifying any packages will
+    return a list of _every_ file on the system's package database (not
+    generally recommended).
+
+    CLI Examples::
+
+        salt '*' pkg.file_list httpd
+        salt '*' pkg.file_list httpd postfix
+        salt '*' pkg.file_list
+    '''
+    return __salt__['lowpkg.file_list'](*packages)
+
+
+def file_dict(*packages):
+    '''
+    List the files that belong to a package, grouped by package. Not
+    specifying any packages will return a list of _every_ file on the system's
+    package database (not generally recommended).
+
+    CLI Examples::
+
+        salt '*' pkg.file_list httpd
+        salt '*' pkg.file_list httpd postfix
+        salt '*' pkg.file_list
+    '''
+    return __salt__['lowpkg.file_dict'](*packages)

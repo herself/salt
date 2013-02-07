@@ -21,6 +21,7 @@ def __virtual__():
                'Amazon',
                'Fedora',
                'ALT',
+               'OEL',
               ]
     if __grains__['os'] in enable:
         if __grains__['os'] == 'Fedora':
@@ -54,7 +55,7 @@ def get_enabled():
     '''
     rlevel = _runlevel()
     ret = set()
-    cmd = '/sbin/chkconfig --list'
+    cmd = '/sbin/chkconfig --list --type sysv'
     lines = __salt__['cmd.run'](cmd).splitlines()
     for line in lines:
         comps = line.split()
@@ -62,6 +63,17 @@ def get_enabled():
             continue
         if '{0}:on'.format(rlevel) in line:
             ret.add(comps[0])
+    
+    cmd = '/sbin/chkconfig --list --type xinetd'
+    lines = __salt__['cmd.run'](cmd).splitlines()
+    for line in lines:
+        comps = line.split()
+        if not comps:
+            continue
+        if not comps[1]:
+            continue
+        if comps[1] == 'on':
+            ret.add(comps[0].strip(':'))
     return sorted(ret)
 
 def get_disabled():
