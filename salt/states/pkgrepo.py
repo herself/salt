@@ -55,6 +55,9 @@ def managed(name, **kwargs):
         enabled configuration. Anything supplied for this list will be saved
         in the repo configuration with a comment marker (#) in front.
 
+    Additional configuration values, such as gpgkey or gpgcheck, are used
+    verbatim to update the options for the yum repo in question.
+
 
     For apt-based systems, take note of the following configuration values:
 
@@ -161,12 +164,12 @@ def managed(name, **kwargs):
             ret['changes'] = { 'repo': name }
         ret['result'] = True
         ret['comment'] = 'Configured package repo {0}'.format(name)
-        return ret
-    except:
-        pass
-    ret['result'] = False
-    ret['comment'] = 'Failed to configure repo {0}'.format(name)
+    except Exception, e:
+        ret['result'] = False
+        ret['comment'] = 'Failed to confirm config of repo {0}: {1}'.format(
+            name, str(e))
     return ret
+
 
 def absent(name):
     '''

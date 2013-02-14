@@ -40,6 +40,23 @@ def __resolve_struct(value, kwval_as):
         return value
 
 
+def _filter_running(running):
+    '''
+    Filter out the result: True + no chnages data
+    '''
+    ret = {}
+    for tag in running:
+        if running[tag]['result']:
+            # It is true
+            if running[tag]['changes']:
+                # It is blue
+                ret[tag] = running[tag]
+                continue
+        else:
+            ret[tag] = running[tag]
+    return ret
+
+
 def running():
     '''
     Return a dict of state return data if a state function is already running.
@@ -150,8 +167,13 @@ def highstate(test=None, **kwargs):
             kwargs.get('kwval_as', 'yaml'))
 
     st_ = salt.state.HighState(opts, pillar)
-    salt.state.HighState.current = st_
-    ret = st_.call_highstate(exclude=kwargs.get('exclude', []))
+    st_.push_active()
+    try:
+        ret = st_.call_highstate(exclude=kwargs.get('exclude', []))
+    finally:
+        st_.pop_active()
+    if __salt__['config.option']('state_data', '') == 'terse' or kwargs.get('terse'):
+        ret = _filter_running(ret)
     serial = salt.payload.Serial(__opts__)
     cache_file = os.path.join(__opts__['cachedir'], 'highstate.p')
 
@@ -194,19 +216,25 @@ def sls(mods, env='base', test=None, exclude=None, **kwargs):
     if isinstance(mods, string_types):
         mods = mods.split(',')
 
-    high, errors = st_.render_highstate({env: mods})
+    st_.push_active()
+    try:
+        high, errors = st_.render_highstate({env: mods})
 
-    if errors:
-        return errors
+        if errors:
+            return errors
 
-    if exclude:
-        if isinstance(exclude, str):
-            exclude = exclude.split(',')
-        if '__exclude__' in high:
-            high['__exclude__'].extend(exclude)
-        else:
-            high['__exclude__'] = exclude
-    ret = st_.state.call_high(high)
+        if exclude:
+            if isinstance(exclude, str):
+                exclude = exclude.split(',')
+            if '__exclude__' in high:
+                high['__exclude__'].extend(exclude)
+            else:
+                high['__exclude__'] = exclude
+        ret = st_.state.call_high(high)
+    finally:
+        st_.pop_active()
+    if __salt__['config.option']('state_data', '') == 'terse' or kwargs.get('terse'):
+        ret = _filter_running(ret)
     serial = salt.payload.Serial(__opts__)
     cache_file = os.path.join(__opts__['cachedir'], 'sls.p')
     try:
@@ -230,8 +258,12 @@ def top(topfn):
     if conflict:
         return conflict
     st_ = salt.state.HighState(__opts__)
+    st_.push_active()
     st_.opts['state_top'] = os.path.join('salt://', topfn)
-    return st_.call_highstate()
+    try:
+        return st_.call_highstate()
+    finally:
+        st_.pop_active()
 
 
 def show_highstate():
@@ -284,6 +316,10 @@ def show_sls(mods, env='base', test=None, **kwargs):
 def show_top():
     '''
     Return the top data that the minion will use for a highstate
+
+    CLI Example::
+
+        salt '*' state.show_top
     '''
     st_ = salt.state.HighState(__opts__)
     return st_.get_top()

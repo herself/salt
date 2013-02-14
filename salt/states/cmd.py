@@ -120,7 +120,6 @@ import copy
 import json
 import shlex
 import logging
-import sys
 
 # Import salt libs
 from salt.exceptions import CommandExecutionError
@@ -232,7 +231,7 @@ def _run_check(cmd_kwargs, onlyif, unless, cwd, user, group, shell):
 def wait(name,
         onlyif=None,
         unless=None,
-        cwd='/root',
+        cwd=None,
         user=None,
         group=None,
         shell=None,
@@ -281,7 +280,7 @@ def wait_script(name,
         template=None,
         onlyif=None,
         unless=None,
-        cwd='/root',
+        cwd=None,
         user=None,
         group=None,
         shell=None,
@@ -345,7 +344,7 @@ def wait_script(name,
 def run(name,
         onlyif=None,
         unless=None,
-        cwd='/root',
+        cwd=None,
         user=None,
         group=None,
         shell=None,
@@ -393,7 +392,7 @@ def run(name,
            'result': False,
            'comment': ''}
 
-    if not os.path.isdir(cwd):
+    if cwd and not os.path.isdir(cwd):
         ret['comment'] = 'Desired working directory is not available'
         return ret
 
@@ -446,7 +445,7 @@ def script(name,
         template=None,
         onlyif=None,
         unless=None,
-        cwd='/root',
+        cwd=None,
         user=None,
         group=None,
         shell=None,
@@ -506,7 +505,7 @@ def script(name,
            'name': name,
            'result': False}
 
-    if not os.path.isdir(cwd):
+    if cwd and not os.path.isdir(cwd):
         ret['comment'] = 'Desired working directory is not available'
         return ret
 

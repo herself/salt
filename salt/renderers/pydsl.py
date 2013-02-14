@@ -244,6 +244,35 @@ to a :term:`function declaration` object that requires the last
 This means later calls(perhaps to update the function's :term:`function arg declaration`) to a previously created function declaration will not change the order.
 
 
+Render time state execution
+-------------------------------------
+When Salt processes a salt formula file(`.sls`), the file is rendered to salt's
+high state data representation by a renderer before the states can be executed.
+In the case of the `pydsl` renderer, the .sls file is executed as a python module
+as it is being rendered which makes it easy to execute a state at render time.
+In `pydsl`, executing one or more states at render time can be done by calling a
+configured :term:`ID declaration` object.
+
+.. code-block:: python
+
+    #!pydsl
+    
+    s = state() # save for later invocation
+
+    # configure it
+    s.cmd.run('echo at render time', cwd='/')
+    s.file.managed('target.txt', source='salt://source.txt')
+
+    s() # execute the two states now
+
+Once an :term:`ID declaration` is called at render time it is detached from the
+sls module as if it was never defined.
+
+.. note::
+    If `implicit ordering` is enabled(ie, via ``__pydsl__.set(ordered=True)``) then
+    the *first* invocation of a :term:`ID declaration` object must be done before a
+    new :term:`function declaration` is created.
+
 
 Integration with the stateconf renderer
 -----------------------------------------
@@ -280,6 +309,7 @@ or after a state in the including sls file.
 '''
 
 import imp
+from salt.utils import pydsl
 
 __all__ = ['render']
 
@@ -294,7 +324,7 @@ def render(template, env='', sls='', tmplpath=None, rendered_sls=None, **kws):
     # to workaround state.py's use of copy.deepcopy(chunk)
     mod.__deepcopy__ = lambda x: mod
 
-    dsl_sls = __salt__['pydsl.sls'](sls, mod, rendered_sls)
+    dsl_sls = pydsl.Sls(sls, env, rendered_sls)
     mod.__dict__.update(
         __pydsl__=dsl_sls,
         include=_wrap_sls(dsl_sls.include),
@@ -308,16 +338,17 @@ def render(template, env='', sls='', tmplpath=None, rendered_sls=None, **kws):
         __sls__=sls,
         __file__=tmplpath,
         **kws)
-    dsl_sls.render_stack.append(dsl_sls)
+
+    dsl_sls.get_render_stack().append(dsl_sls)
     exec template.read() in mod.__dict__
-    highstate = dsl_sls.to_highstate()
-    dsl_sls.render_stack.pop()
+    highstate = dsl_sls.to_highstate(mod)
+    dsl_sls.get_render_stack().pop()
     return highstate
     
 
 def _wrap_sls(method):
     def _sls_method(*args, **kws):
-        sls = method.im_class.render_stack[-1]
+        sls = pydsl.Sls.get_render_stack()[-1]
         return getattr(sls, method.__name__)(*args, **kws)
     return _sls_method
 

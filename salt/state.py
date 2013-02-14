@@ -1776,126 +1776,134 @@ class BaseHighState(object):
                 errors.append(('SLS {0} does not render to a dictionary'
                                .format(sls)))
             else:
+                include = []
                 if 'include' in state:
                     if not isinstance(state['include'], list):
                         err = ('Include Declaration in SLS {0} is not formed '
                                'as a list'.format(sls))
                         errors.append(err)
                     else:
-                        for inc_sls in state.pop('include'):
-                            # inc_sls may take the form of:
-                            #   'sls.to.include' <- same as {<env>: 'sls.to.include'}
-                            #   {<env_key>: 'sls.to.include'}
-                            #   {'_xenv': 'sls.to.resolve'}
-                            xenv_key = '_xenv'
+                        include = state.pop('include')
 
-                            if isinstance(inc_sls, dict):
-                                env_key, inc_sls = inc_sls.popitem()
-                            else:
-                                env_key = env
-
-                            if env_key != xenv_key:
-                                # Resolve inc_sls in the specified environment
-                                if env_key in matches and fnmatch.filter(self.avail[env_key], inc_sls):
-                                    resolved_envs = [env_key]
-                                else:
-                                    resolved_envs = []
-                            else:
-                                # Resolve inc_sls in the subset of environment matches
-                                resolved_envs = [
-                                    aenv for aenv in matches
-                                    if fnmatch.filter(self.avail[aenv], inc_sls)
-                                ]
-
-                            # An include must be resolved to a single environment, or
-                            # the include must exist in the current environment
-                            if len(resolved_envs) == 1 or env in resolved_envs:
-                                if inc_sls not in mods:
-                                    nstate, err = self.render_state(
-                                        inc_sls,
-                                        resolved_envs[0] if len(resolved_envs) == 1 else env,
-                                        mods,
-                                        matches
-                                    )
-                                    if nstate:
-                                        self.merge_included_states(state, nstate, errors)
-                                        state.update(nstate)
-                                    if err:
-                                        errors.extend(err)
-                            else:
-                                msg = ''
-                                if not resolved_envs:
-                                    msg = ('Unknown include: Specified SLS {0}: {1} is not available on the salt '
-                                           'master in environment(s): {2} '
-                                           ).format(env_key,
-                                                    inc_sls,
-                                                    ', '.join(matches) if env_key == xenv_key else env_key)
-                                elif len(resolved_envs) > 1:
-                                    msg = ('Ambiguous include: Specified SLS {0}: {1} is available on the salt master '
-                                           'in multiple available environments: {2}'
-                                           ).format(env_key,
-                                                    inc_sls,
-                                                    ', '.join(resolved_envs))
-                                log.error(msg)
-                                if self.opts['failhard']:
-                                    errors.append(msg)
                 self._handle_extend(state, sls, env, errors)
                 self._handle_exclude(state, sls, env, errors)
-                for name in state:
-                    if not isinstance(state[name], dict):
-                        if name == '__extend__':
-                            continue
-                        if name == '__exclude__':
-                            continue
+                self._handle_state_decls(state, sls, env, errors)
 
-                        if isinstance(state[name], string_types):
-                            # Is this is a short state, it needs to be padded
-                            if '.' in state[name]:
-                                comps = state[name].split('.')
-                                state[name] = {'__sls__': sls,
-                                               '__env__': env,
-                                               comps[0]: [comps[1]]}
-                                continue
-                        errors.append(
-                            ('Name {0} in sls {1} is not a dictionary'
-                            .format(name, sls)))
-                        continue
-                    skeys = set()
-                    for key in sorted(state[name]):
-                        if key.startswith('_'):
-                            continue
-                        if not isinstance(state[name][key], list):
-                            continue
-                        if '.' in key:
-                            comps = key.split('.')
-                            # Salt doesn't support state files such as:
-                            #
-                            #     /etc/redis/redis.conf:
-                            #       file.managed:
-                            #         - source: salt://redis/redis.conf
-                            #         - user: redis
-                            #         - group: redis
-                            #         - mode: 644
-                            #       file.comment:
-                            #           - regex: ^requirepass
-                            if comps[0] in skeys:
-                                err = ('Name "{0}" in sls "{1}" contains '
-                                       'multiple state decs of the same type'
-                                      ).format(name, sls)
-                                errors.append(err)
-                                continue
-                            state[name][comps[0]] = state[name].pop(key)
-                            state[name][comps[0]].append(comps[1])
-                            skeys.add(comps[0])
-                            continue
-                        skeys.add(key)
-                    if '__sls__' not in state[name]:
-                        state[name]['__sls__'] = sls
-                    if '__env__' not in state[name]:
-                        state[name]['__env__'] = env
+                for inc_sls in include:
+                    # inc_sls may take the form of:
+                    #   'sls.to.include' <- same as {<env>: 'sls.to.include'}
+                    #   {<env_key>: 'sls.to.include'}
+                    #   {'_xenv': 'sls.to.resolve'}
+                    xenv_key = '_xenv'
+
+                    if isinstance(inc_sls, dict):
+                        env_key, inc_sls = inc_sls.popitem()
+                    else:
+                        env_key = env
+
+                    if env_key != xenv_key:
+                        # Resolve inc_sls in the specified environment
+                        if env_key in matches and fnmatch.filter(self.avail[env_key], inc_sls):
+                            resolved_envs = [env_key]
+                        else:
+                            resolved_envs = []
+                    else:
+                        # Resolve inc_sls in the subset of environment matches
+                        resolved_envs = [
+                            aenv for aenv in matches
+                            if fnmatch.filter(self.avail[aenv], inc_sls)
+                        ]
+
+                    # An include must be resolved to a single environment, or
+                    # the include must exist in the current environment
+                    if len(resolved_envs) == 1 or env in resolved_envs:
+                        if inc_sls not in mods:
+                            nstate, err = self.render_state(
+                                inc_sls,
+                                resolved_envs[0] if len(resolved_envs) == 1 else env,
+                                mods,
+                                matches
+                            )
+                            if nstate:
+                                self.merge_included_states(state, nstate, errors)
+                                state.update(nstate)
+                            if err:
+                                errors.extend(err)
+                    else:
+                        msg = ''
+                        if not resolved_envs:
+                            msg = ('Unknown include: Specified SLS {0}: {1} is not available on the salt '
+                                   'master in environment(s): {2} '
+                                   ).format(env_key,
+                                            inc_sls,
+                                            ', '.join(matches) if env_key == xenv_key else env_key)
+                        elif len(resolved_envs) > 1:
+                            msg = ('Ambiguous include: Specified SLS {0}: {1} is available on the salt master '
+                                   'in multiple available environments: {2}'
+                                   ).format(env_key,
+                                            inc_sls,
+                                            ', '.join(resolved_envs))
+                        log.error(msg)
+                        if self.opts['failhard']:
+                            errors.append(msg)
         else:
             state = {}
         return state, errors
+
+
+    def _handle_state_decls(self, state, sls, env, errors):
+        for name in state:
+            if not isinstance(state[name], dict):
+                if name == '__extend__':
+                    continue
+                if name == '__exclude__':
+                    continue
+
+                if isinstance(state[name], string_types):
+                    # Is this is a short state, it needs to be padded
+                    if '.' in state[name]:
+                        comps = state[name].split('.')
+                        state[name] = {'__sls__': sls,
+                                       '__env__': env,
+                                       comps[0]: [comps[1]]}
+                        continue
+                errors.append(
+                    ('Name {0} in sls {1} is not a dictionary'
+                    .format(name, sls)))
+                continue
+            skeys = set()
+            for key in sorted(state[name]):
+                if key.startswith('_'):
+                    continue
+                if not isinstance(state[name][key], list):
+                    continue
+                if '.' in key:
+                    comps = key.split('.')
+                    # Salt doesn't support state files such as:
+                    #
+                    #     /etc/redis/redis.conf:
+                    #       file.managed:
+                    #         - source: salt://redis/redis.conf
+                    #         - user: redis
+                    #         - group: redis
+                    #         - mode: 644
+                    #       file.comment:
+                    #           - regex: ^requirepass
+                    if comps[0] in skeys:
+                        err = ('Name "{0}" in sls "{1}" contains '
+                               'multiple state decs of the same type'
+                              ).format(name, sls)
+                        errors.append(err)
+                        continue
+                    state[name][comps[0]] = state[name].pop(key)
+                    state[name][comps[0]].append(comps[1])
+                    skeys.add(comps[0])
+                    continue
+                skeys.add(key)
+            if '__sls__' not in state[name]:
+                state[name]['__sls__'] = sls
+            if '__env__' not in state[name]:
+                state[name]['__env__'] = env
 
     def _handle_extend(self, state, sls, env, errors):
         if 'extend' in state:
@@ -2079,12 +2087,33 @@ class HighState(BaseHighState):
     compound state derived from a group of template files stored on the
     salt master or in the local cache.
     '''
-    current = None  # Current active HighState object during a state.highstate run.
+    stack = [] # a stack of active HighState objects during a state.highstate run.
+
     def __init__(self, opts, pillar=None):
         self.client = salt.fileclient.get_file_client(opts)
         BaseHighState.__init__(self, opts)
         self.state = State(self.opts, pillar)
         self.matcher = salt.minion.Matcher(self.opts)
+
+        # tracks all pydsl state declarations globally across sls files
+        self._pydsl_all_decls = {}
+
+        # a stack of current rendering Sls objects, maintained and used by the pydsl renderer.
+        self._pydsl_render_stack = []
+
+    def push_active(self):
+        self.stack.append(self)
+
+    @classmethod
+    def pop_active(self):
+        self.stack.pop()
+
+    @classmethod
+    def get_active(klass):
+        try:
+            return klass.stack[-1]
+        except IndexError:
+            return None
 
 
 class MasterState(State):

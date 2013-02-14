@@ -27,13 +27,6 @@ from salt.exceptions import (
 log = logging.getLogger(__name__)
 
 
-try:
-    import win32api
-    import win32con
-except ImportError:
-    pass
-
-
 def gen_keys(keydir, keyname, keysize):
     '''
     Generate a keypair for use with salt
@@ -382,11 +375,11 @@ class SAuth(Auth):
         in, signing in can occur as often as needed to keep up with the
         revolving master aes key.
         '''
-        creds = self.sign_in()
-        if creds == 'retry':
-            log.error('Failed to authenticate with the master, verify this'\
-                + ' minion\'s public key has been accepted on the salt master')
-            sys.exit(2)
+        while True:
+            creds = self.sign_in()
+            if creds == 'retry':
+                continue
+            break
         return Crypticle(self.opts, creds['aes'])
 
     def gen_token(self, clear_tok):

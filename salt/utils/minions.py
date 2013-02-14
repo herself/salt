@@ -151,18 +151,24 @@ class CkMinions(object):
                     # We are matching a single component to a single list member
                     found = False
                     for member in grains[comps[0]]:
-                        if re.match(comps[1].lower(), str(member).lower()):
-                            found = True
+                        try:
+                            if re.match(comps[1].lower(), str(member).lower()):
+                                found = True
+                        except Exception:
+                            log.error('Invalid Regex in grain match')
                     if found:
                         continue
                     minions.remove(id_)
                     continue
-                if re.match(
-                    comps[1].lower(),
-                    str(grains[comps[0]]).lower()
-                    ):
-                    continue
-                else:
+                try:
+                    if re.match(
+                        comps[1].lower(),
+                        str(grains[comps[0]]).lower()
+                        ):
+                        continue
+                    else:
+                        minions.remove(id_)
+                except Exception:
                     minions.remove(id_)
         return list(minions)
 
@@ -246,10 +252,13 @@ class CkMinions(object):
         if isinstance(fun, str):
             fun = [fun]
         for func in fun:
-            if re.match(regex, func):
-                vals.append(True)
-            else:
-                vals.append(False)
+            try:
+                if re.match(regex, func):
+                    vals.append(True)
+                else:
+                    vals.append(False)
+            except Exception:
+                log.error('Invalid regular expression: {0}'.format(regex))
         return all(vals)
 
     def auth_check(self, auth_list, funs, tgt, tgt_type='glob'):

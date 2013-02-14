@@ -302,7 +302,7 @@ def installed(
     if __opts__['test']:
         if targets:
             if sources:
-                summary = ', '.join(modified)
+                summary = ', '.join(sources)
             else:
                 summary = ', '.join([_get_desired_pkg(x, targets)
                                      for x in targets])

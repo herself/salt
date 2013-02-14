@@ -24,6 +24,7 @@ from multiprocessing import Process
 
 # Import third party libs
 import zmq
+import yaml
 
 # Import salt libs
 import salt.payload
@@ -136,7 +137,7 @@ class SaltEvent(object):
             if self.sub in socks and socks[self.sub] == zmq.POLLIN:
                 raw = self.sub.recv()
                 # Double check the tag
-                if tag != raw[:20].rstrip('|'):
+                if not raw[:20].rstrip('|').startswith(tag):
                     continue
                 data = self.serial.loads(raw[20:])
                 if full:
@@ -314,6 +315,24 @@ class Reactor(multiprocessing.Process, salt.state.Compiler):
         '''
         log.debug('Gathering rections for tag {0}'.format(tag))
         reactors = []
+        if isinstance(self.opts['reactor'], basestring):
+            try:
+                with open(self.opts['reactor']) as fp_:
+                    react_map = yaml.safe_load(fp_.read())
+            except (OSError, IOError):
+                log.error(
+                    'Failed to read reactor map: "{0}"'.format(
+                        self.opts['reactor']
+                        )
+                    )
+            except Exception:
+                log.error(
+                    'Failed to parse yaml in reactor map: "{0}"'.format(
+                        self.opts['reactor']
+                        )
+                    )
+        else:
+            react_map = self.opts['reactor']
         for ropt in self.opts['reactor']:
             if not isinstance(ropt, dict):
                 continue
@@ -403,7 +422,7 @@ class ReactWrap(object):
         '''
         kwargs['fun'] = fun
         wheel = salt.wheel.Wheel(self.opts)
-        return wheel.master_call(**kwargs)
+        return wheel.call_func(**kwargs)
 
 
 class StateFire(object):
