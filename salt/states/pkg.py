@@ -10,6 +10,26 @@ declarations are typically rather simple:
 
     vim:
       pkg.installed
+
+A more involved example involves pulling from a custom repository.
+Note that the pkgrepo has a require_in clause.
+This is necessary and can not be replaced by a require clause in the pkg.
+
+.. code-block:: yaml
+
+    base:
+      pkgrepo.managed:
+        - human_name: Logstash PPA
+        - name: deb http://ppa.launchpad.net/wolfnet/logstash/ubuntu precise main
+        - dist: precise
+        - file: /etc/apt/sources.list.d/logstash.list
+        - keyid: 28B04E4A
+        - keyserver: keyserver.ubuntu.com
+        - require_in:
+          - pkg: logstash
+
+    logstash:
+      pkg.installed
 '''
 
 # Import python libs
@@ -286,6 +306,9 @@ def installed(
     '''
     rtag = __gen_rtag()
 
+    if not isinstance(version, basestring) and version is not None:
+        version = str(version)
+
     result = _find_install_targets(name, version, pkgs, sources)
     try:
         desired, targets = result
@@ -302,7 +325,7 @@ def installed(
     if __opts__['test']:
         if targets:
             if sources:
-                summary = ', '.join(sources)
+                summary = ', '.join(targets)
             else:
                 summary = ', '.join([_get_desired_pkg(x, targets)
                                      for x in targets])
@@ -444,7 +467,9 @@ def latest(
         desired_pkgs = [name]
 
     cur = __salt__['pkg.version'](*desired_pkgs)
-    avail = __salt__['pkg.available_version'](*desired_pkgs)
+    avail = __salt__['pkg.latest_version'](*desired_pkgs,
+                                           fromrepo=fromrepo,
+                                           **kwargs)
 
     # Repack the cur/avail data if only a single package is being checked
     if isinstance(cur, basestring):

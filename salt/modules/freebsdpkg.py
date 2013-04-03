@@ -5,8 +5,7 @@ Package support for FreeBSD
 # Import python libs
 import logging
 
-# Import python libs
-import os
+# Import salt libs
 import salt.utils
 
 
@@ -48,7 +47,7 @@ def search(pkg_name):
         return {"Results": res}
 
 
-def available_version(*names):
+def latest_version(*names, **kwargs):
     '''
     Return the latest version of the named package available for upgrade or
     installation. If more than one package name is specified, a dict of
@@ -59,8 +58,8 @@ def available_version(*names):
 
     CLI Example::
 
-        salt '*' pkg.available_version <package name>
-        salt '*' pkg.available_version <package1> <package2> <package3> ...
+        salt '*' pkg.latest_version <package name>
+        salt '*' pkg.latest_version <package1> <package2> <package3> ...
     '''
 
     ret = {}
@@ -106,8 +105,11 @@ def available_version(*names):
 
     return ret
 
+# available_version is being deprecated
+available_version = latest_version
 
-def version(*names):
+
+def version(*names, **kwargs):
     '''
     Returns a string representing the package version or an empty string if not
     installed. If more than one package name is specified, a dict of
@@ -118,18 +120,7 @@ def version(*names):
         salt '*' pkg.version <package name>
         salt '*' pkg.version <package1> <package2> <package3> ...
     '''
-    if not names:
-        return ''
-
-    ret = {}
-    installed = list_pkgs()
-    for name in names:
-        ret[name] = installed.get(name, '')
-
-    if len(names) == 1:
-        return ret[names[0]]
-    else:
-        return ret
+    return __salt__['pkg_resource.version'](*names, **kwargs)
 
 
 def refresh_db():
@@ -147,7 +138,7 @@ def refresh_db():
     return {}
 
 
-def list_pkgs():
+def list_pkgs(versions_as_list=False):
     '''
     List the packages currently installed as a dict::
 
@@ -157,6 +148,7 @@ def list_pkgs():
 
         salt '*' pkg.list_pkgs
     '''
+    versions_as_list = salt.utils.is_true(versions_as_list)
     if _check_pkgng():
         pkg_command = '{0} info'.format(_cmd('pkg'))
     else:
@@ -167,7 +159,10 @@ def list_pkgs():
             continue
         pkg, ver = line.split(' ')[0].rsplit('-', 1)
         __salt__['pkg_resource.add_pkg'](ret, pkg, ver)
-        __salt__['pkg_resource.sort_pkglist'](ret)
+
+    __salt__['pkg_resource.sort_pkglist'](ret)
+    if not versions_as_list:
+        __salt__['pkg_resource.stringify'](ret)
     return ret
 
 

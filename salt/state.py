@@ -127,20 +127,19 @@ def format_log(ret):
                 if 'diff' in chg:
                     if isinstance(chg['diff'], string_types):
                         msg = 'File changed:\n{0}'.format(chg['diff'])
-                chgfirst = next(iter(chg))
-                if isinstance(chg[chgfirst], dict):
-                    if 'new' in chg[chgfirst]:
+                if all([isinstance(x, dict) for x in chg.values()]):
+                    if all([('old' in x and 'new' in x)
+                            for x in chg.values()]):
                         # This is the return data from a package install
                         msg = 'Installed Packages:\n'
                         for pkg in chg:
-                            old = 'absent'
-                            if chg[pkg]['old']:
-                                old = chg[pkg]['old']
-                            msg += '{0} changed from {1} to {2}\n'.format(
-                                    pkg, old, chg[pkg]['new'])
+                            old = chg[pkg]['old'] or 'absent'
+                            new = chg[pkg]['new'] or 'absent'
+                            msg += '{0} changed from {1} to ' \
+                                   '{2}\n'.format(pkg, old, new)
             if not msg:
                 msg = str(ret['changes'])
-            if ret['result']:
+            if ret['result'] is True or ret['result'] is None:
                 log.info(msg)
             else:
                 log.error(msg)
@@ -317,8 +316,11 @@ class Compiler(object):
                                         if not ishashable(req_val):
                                             errors.append((
                                                 'Illegal requisite "{0}", '
-                                                'please check your syntax.\n'
-                                                ).format(str(req_val)))
+                                                'is SLS {1}\n'
+                                                ).format(
+                                                    str(req_val),
+                                                    body['__sls__']))
+                                            continue
 
                                         # Check for global recursive requisites
                                         reqs[name][req_val] = req_key
@@ -724,6 +726,13 @@ class State(object):
                             # Add the requires to the reqs dict and check them
                             # all for recursive requisites.
                             argfirst = next(iter(arg))
+                            if argfirst == 'names':
+                                if not isinstance(arg[argfirst], list):
+                                    errors.append(('Names statement in state '
+                                    '"{0}" in sls "{1}" needs to be formed as'
+                                    'a list').format(
+                                        name,
+                                        body['__sls__']))
                             if argfirst == 'require' or argfirst == 'watch':
                                 if not isinstance(arg[argfirst], list):
                                     errors.append(('The require or watch'
@@ -752,6 +761,7 @@ class State(object):
                                                 'Illegal requisite "{0}", '
                                                 'please check your syntax.\n'
                                                 ).format(str(req_val)))
+                                            continue
 
                                         # Check for global recursive requisites
                                         reqs[name][req_val] = req_key
@@ -908,9 +918,12 @@ class State(object):
                         for key, val in arg.items():
                             if key == 'names':
                                 names.update(val)
-                                continue
+                            elif (key == 'name' and
+                                  not isinstance(val, string_types)):
+                                # Invalid name, fall back to ID
+                                chunk[key] = name
                             else:
-                                chunk.update(arg)
+                                chunk[key] = val
                 if names:
                     for low_name in names:
                         live = copy.deepcopy(chunk)
@@ -1061,6 +1074,8 @@ class State(object):
                                     extend[name] = {}
                                 if not _state in extend[name]:
                                     extend[name][_state] = []
+                                extend[name]['__env__'] = body['__env__']
+                                extend[name]['__sls__'] = body['__sls__']
                                 for ind in range(len(extend[name][_state])):
                                     if next(iter(
                                         extend[name][_state][ind])) == rkey:
@@ -1143,6 +1158,8 @@ class State(object):
                                     extend[name] = {}
                                 if not _state in extend[name]:
                                     extend[name][_state] = []
+                                extend[name]['__env__'] = body['__env__']
+                                extend[name]['__sls__'] = body['__sls__']
                                 for ind in range(len(extend[name][_state])):
                                     if next(iter(
                                         extend[name][_state][ind])) == rkey:
@@ -1518,6 +1535,7 @@ class BaseHighState(object):
     def __init__(self, opts):
         self.opts = self.__gen_opts(opts)
         self.avail = self.__gather_avail()
+        self.serial = salt.payload.Serial(self.opts)
 
     def __gather_avail(self):
         '''
@@ -1997,7 +2015,7 @@ class BaseHighState(object):
 
 
 
-    def call_highstate(self, exclude=None):
+    def call_highstate(self, exclude=None, cache=None, cache_name='highstate'):
         '''
         Run the sequence to execute the salt highstate for this minion
         '''
@@ -2011,10 +2029,24 @@ class BaseHighState(object):
                    '__run_num__': 0,
                    }
               }
+        cfn = os.path.join(
+                self.opts['cachedir'],
+                '{0}.cache.p'.format(cache_name)
+                )
 
+        if cache:
+            if os.path.isfile(cfn):
+                with open(cfn, 'r') as fp_:
+                    high = self.serial.load(fp_)
+                    return self.state.call_high(high)
         #File exists so continue
         err = []
-        top = self.get_top()
+        try:
+            top = self.get_top()
+        except Exception:
+            trb = traceback.format_exc()
+            err.append(trb)
+            return err
         err += self.verify_tops(top)
         matches = self.top_matches(top)
         if not matches:
@@ -2035,6 +2067,8 @@ class BaseHighState(object):
             return err
         if not high:
             return ret
+        with open(cfn, 'w+') as fp_:
+            self.serial.dump(high, fp_)
         return self.state.call_high(high)
 
     def compile_highstate(self):

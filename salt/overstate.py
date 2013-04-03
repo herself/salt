@@ -79,25 +79,6 @@ class OverState(object):
         raw = self.local.cmd(match, 'test.ping', expr_form='compound')
         return raw.keys()
 
-    def _check_result(self, running):
-        '''
-        Check the total return value of the run and determine if the running
-        dict has any issues
-        '''
-        if not isinstance(running, dict):
-            return False
-        if not running:
-            return False
-        for host in running:
-            if not isinstance(running[host], dict):
-                return False
-            for tag, ret in running[host].items():
-                if not 'result' in ret:
-                    return False
-                if ret['result'] is False:
-                    return False
-        return True
-
     def _names(self):
         '''
         Return a list of names defined in the overstate
@@ -132,38 +113,70 @@ class OverState(object):
         '''
         fun = 'state.highstate'
         arg = ()
+        req_fail = {name: {}}
         if 'sls' in stage:
             fun = 'state.sls'
             arg = (','.join(stage['sls']), self.env)
-        req_fail = {name: {}}
+        elif 'function' in stage or 'fun' in stage:
+            fun_d = stage.get('function', stage.get('fun'))
+            if not fun_d:
+                # Function dict is empty
+                yield {name: {}}
+            if isinstance(fun_d, str):
+                fun = fun_d
+            elif isinstance(fun_d, dict):
+                fun = fun_d.keys()[0]
+                arg = fun_d[fun]
+            else:
+                yield {name: {}}
         if 'require' in stage:
             for req in stage['require']:
                 if req in self.over_run:
                     # The req has been called, check it
-                    if self._check_result(self.over_run[req]):
-                        # This req is good, check the next
-                        continue
-                    else:
+                    for minion in self.over_run[req]:
+                        running = {minion: self.over_run[req][minion]['ret']}
+                        if self.over_run[req][minion]['fun'] == 'state.highstate':
+                            if salt.utils.check_state_result(running):
+                                # This req is good, check the next
+                                continue
+                        elif self.over_run[req][minion]['fun'] == 'state.sls':
+                            if salt.utils.check_state_result(running):
+                                # This req is good, check the next
+                                continue
+                        else:
+                            if not self.over_run[req][minion]['retcode']:
+                                if self.over_run[req][minion]['success']:
+                                    continue
                         tag_name = 'req_|-fail_|-fail_|-None'
                         failure = {tag_name: {
-                                'result': False,
-                                'comment': 'Requisite {0} failed for stage'.format(req),
-                                'name': 'Requisite Failure',
-                                'changes': {},
-                                '__run_num__': 0,
-                                    }
-                                }
+                            'ret': {
+                                    'result': False,
+                                    'comment': 'Requisite {0} failed for stage on minion {1}'.format(req, minion),
+                                    'name': 'Requisite Failure',
+                                    'changes': {},
+                                    '__run_num__': 0,
+                                        },
+                            'retcode': 254,
+                            'success': False,
+                            'fun': 'req.fail',
+                            }
+                            }
                         self.over_run[name] = failure
                         req_fail[name].update(failure)
                 elif req not in self.names:
                     tag_name = 'No_|-Req_|-fail_|-None'
                     failure = {tag_name: {
+                        'ret': {
                             'result': False,
-                            'comment': 'Requisite {0} was not found'.format(req),
+                            'comment': 'Requisite {0} not found'.format(req),
                             'name': 'Requisite Failure',
                             'changes': {},
                             '__run_num__': 0,
-                                }
+                                },
+                            'retcode': 253,
+                            'success': False,
+                            'fun': 'req.fail',
+                            }
                             }
                     self.over_run[name] = failure
                     req_fail[name].update(failure)
@@ -182,12 +195,26 @@ class OverState(object):
         else:
             ret = {}
             tgt = self._stage_list(stage['match'])
-            for minion in self.local.cmd_iter(
-                    tgt,
-                    fun,
-                    arg,
-                    expr_form='list'):
-                ret.update({minion.keys()[0]: minion[minion.keys()[0]]['ret']})
+            cmd_kwargs = {
+                'tgt': tgt,
+                'fun': fun,
+                'arg': arg,
+                'expr_form': 'list',
+                'raw': True}
+            if 'batch' in stage:
+                local_cmd = self.local.cmd_batch
+                cmd_kwargs['batch'] = stage['batch']
+            else:
+                local_cmd = self.local.cmd_iter
+            for minion in local_cmd(**cmd_kwargs):
+                ret.update({minion['id']: 
+                        {
+                        'ret': minion['return'],
+                        'fun': minion['fun'],
+                        'retcode': minion.get('retcode', 0),
+                        'success': minion.get('success', True),
+                        }
+                    })
             self.over_run[name] = ret
             yield {name: ret}
 
@@ -231,4 +258,7 @@ class OverState(object):
                         for yret in yielder(sret):
                             sname = yret.keys()[0]
                             yield [self.get_stage(sname)]
-                            yield yret[sname]
+                            final = {}
+                            for minion in yret[sname]:
+                                final[minion] = yret[sname][minion]['ret']
+                            yield final

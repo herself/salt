@@ -15,15 +15,18 @@ Full list of builtin state modules
     cmd
     cron
     debconfmod
+    disk
     file
     gem
     git
+    grains
     group
     hg
     host
     keyboard
     kmod
     layman
+    libvirt
     locale
     makeconf
     module
@@ -34,14 +37,15 @@ Full list of builtin state modules
     mysql_grants
     mysql_user
     network
+    npm
     pecl
     pip
     pkgng
     pkg
     pkgrepo
     postgres_database
-    postgres_user
     postgres_group
+    postgres_user
     rabbitmq_user
     rabbitmq_vhost
     rvm
@@ -54,5 +58,6 @@ Full list of builtin state modules
     svn
     sysctl
     timezone
+    tomcat
     user
     virtualenv

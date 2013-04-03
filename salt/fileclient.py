@@ -36,9 +36,9 @@ def get_file_client(opts):
     server
     '''
     return {
-            'remote': RemoteClient,
-            'local': LocalClient
-           }.get(opts['file_client'], RemoteClient)(opts)
+        'remote': RemoteClient,
+        'local': LocalClient
+    }.get(opts['file_client'], RemoteClient)(opts)
 
 
 class Client(object):
@@ -80,15 +80,17 @@ class Client(object):
         '''
         Return the local location to cache the file, cache dirs will be made
         '''
-        dest = os.path.join(
-            self.opts['cachedir'],
-            'files',
-            env,
-            path
-            )
+        dest = os.path.join(self.opts['cachedir'],
+                            'files',
+                            env,
+                            path)
         destdir = os.path.dirname(dest)
         cumask = os.umask(63)
         if not os.path.isdir(destdir):
+            # remove destdir if it is a regular file to avoid an OSError when
+            # running os.makedirs below
+            if os.path.isfile(destdir):
+                os.remove(destdir)
             os.makedirs(destdir)
         yield dest
         os.umask(cumask)
@@ -138,17 +140,22 @@ class Client(object):
         '''
         ret = []
         path = self._check_proto(path)
+        # We want to make sure files start with this *directory*, use
+        # '/' explicitly because the master (that's generating the
+        # list of files) only runs on posix
+        if not path.endswith('/'):
+            path = path + '/'
+
         log.info(
             'Caching directory \'{0}\' for environment \'{1}\''.format(
                 path, env
             )
         )
-        for fn_ in self.file_list(env):
-            if fn_.startswith('{0}{1}'.format(path, os.path.sep)):
-                local = self.cache_file('salt://{0}'.format(fn_), env)
-                if not fn_.strip():
-                    continue
-                ret.append(local)
+        #go through the list of all files finding ones that are in
+        #the target directory and caching them
+        ret.extend([self.cache_file('salt://' + fn_, env)
+                    for fn_ in self.file_list(env)
+                    if fn_.strip() and fn_.startswith(path)])
 
         if include_empty:
             # Break up the path into a list containing the bottom-level directory
@@ -159,13 +166,13 @@ class Client(object):
             #    prefix = ''
             #else:
             #    prefix = separated[0]
+            dest = salt.utils.path_join(
+                self.opts['cachedir'],
+                'files',
+                env
+            )
             for fn_ in self.file_list_emptydirs(env):
                 if fn_.startswith(path):
-                    dest = salt.utils.path_join(
-                        self.opts['cachedir'],
-                        'files',
-                        env
-                    )
                     minion_dir = '{0}/{1}'.format(dest, fn_)
                     if not os.path.isdir(minion_dir):
                         os.makedirs(minion_dir)
@@ -177,7 +184,7 @@ class Client(object):
         Cache a local file on the minion in the localfiles cache
         '''
         dest = os.path.join(self.opts['cachedir'], 'localfiles',
-                path.lstrip('/'))
+                            path.lstrip('/'))
         destdir = os.path.dirname(dest)
 
         if not os.path.isdir(destdir):
@@ -215,9 +222,9 @@ class Client(object):
         otherwise returns a blank string
         '''
         localsfilesdest = os.path.join(
-                self.opts['cachedir'], 'localfiles', path.lstrip('/'))
+            self.opts['cachedir'], 'localfiles', path.lstrip('/'))
         filesdest = os.path.join(
-                self.opts['cachedir'], 'files', env, path.lstrip('salt://'))
+            self.opts['cachedir'], 'files', env, path.lstrip('salt://'))
 
         if os.path.exists(filesdest):
             return filesdest
@@ -330,9 +337,9 @@ class Client(object):
             return dest
         except HTTPError as ex:
             raise MinionError('HTTP error {0} reading {1}: {3}'.format(
-                    ex.code,
-                    url,
-                    *BaseHTTPServer.BaseHTTPRequestHandler.responses[ex.code]))
+                ex.code,
+                url,
+                *BaseHTTPServer.BaseHTTPRequestHandler.responses[ex.code]))
         except URLError as ex:
             raise MinionError('Error reading {0}: {1}'.format(url, ex.reason))
 
@@ -354,13 +361,12 @@ class Client(object):
             return ''
         if template in salt.utils.templates.TEMPLATE_REGISTRY:
             data = salt.utils.templates.TEMPLATE_REGISTRY[template](
-                    sfn,
-                    **kwargs
-                    )
+                sfn,
+                **kwargs
+            )
         else:
             log.error('Attempted to render template with unavailable engine '
                       '{0}'.format(template))
-            salt.utils.safe_rm(data['data'])
             return ''
         if not data['result']:
             # Failed to render the template
@@ -436,13 +442,10 @@ class LocalClient(Client):
                 for fname in files:
                     ret.append(
                         os.path.relpath(
-                            os.path.join(
-                                root,
-                                fname
-                                ),
+                            os.path.join(root, fname),
                             path
-                            )
                         )
+                    )
         return ret
 
     def file_list_emptydirs(self, env='base'):
@@ -524,12 +527,11 @@ class LocalClient(Client):
                        '').format(self.opts['external_nodes']))
             return {}
         cmd = '{0} {1}'.format(self.opts['external_nodes'], self.opts['id'])
-        ndata = yaml.safe_load(
-                subprocess.Popen(
-                    cmd,
-                    shell=True,
-                    stdout=subprocess.PIPE
-                    ).communicate()[0])
+        ndata = yaml.safe_load(subprocess.Popen(
+                               cmd,
+                               shell=True,
+                               stdout=subprocess.PIPE
+                               ).communicate()[0])
         ret = {}
         if 'environment' in ndata:
             env = ndata['environment']
@@ -588,12 +590,11 @@ class RemoteClient(Client):
                 load['loc'] = fn_.tell()
             try:
                 data = self.auth.crypticle.loads(
-                        self.sreq.send(
-                            'aes',
-                            self.auth.crypticle.dumps(load),
-                            3,
-                            60)
-                        )
+                    self.sreq.send('aes',
+                                   self.auth.crypticle.dumps(load),
+                                   3,
+                                   60)
+                )
             except SaltReqTimeoutError:
                 return ''
 
@@ -611,19 +612,21 @@ class RemoteClient(Client):
                     d_tries += 1
                     with salt.utils.fopen(dest, 'rb') as fp_:
                         hsum = getattr(
-                                hashlib,
-                                data.get('hash_type', 'md5')
-                                )(fp_.read()).hexdigest()
+                            hashlib,
+                            data.get('hash_type', 'md5')
+                        )(fp_.read()).hexdigest()
                         if hsum != data['hsum']:
-                            log.warn(
-                                ('Bad download of file {0}, attempt {1} of 3'
-                                    ).format(path, d_tries)
-                                )
+                            log.warn('Bad download of file {0}, attempt {1} '
+                                     'of 3'.format(path, d_tries))
                             continue
                 break
             if not fn_:
                 with self._cache_loc(data['dest'], env) as cache_dest:
                     dest = cache_dest
+                    # If a directory was formerly cached at this path, then
+                    # remove it to avoid a traceback trying to write the file
+                    if os.path.isdir(dest):
+                        salt.utils.rm_rf(dest)
                     fn_ = salt.utils.fopen(dest, 'wb+')
             if data.get('gzip', None):
                 data = salt.utils.gzip_util.uncompress(data['data'])
@@ -642,12 +645,11 @@ class RemoteClient(Client):
                 'cmd': '_file_list'}
         try:
             return self.auth.crypticle.loads(
-                    self.sreq.send(
-                        'aes',
-                        self.auth.crypticle.dumps(load),
-                        3,
-                        60)
-                    )
+                self.sreq.send('aes',
+                               self.auth.crypticle.dumps(load),
+                               3,
+                               60)
+            )
         except SaltReqTimeoutError:
             return ''
 
@@ -659,12 +661,11 @@ class RemoteClient(Client):
                 'cmd': '_file_list_emptydirs'}
         try:
             return self.auth.crypticle.loads(
-                    self.sreq.send(
-                        'aes',
-                        self.auth.crypticle.dumps(load),
-                        3,
-                        60)
-                    )
+                self.sreq.send('aes',
+                               self.auth.crypticle.dumps(load),
+                               3,
+                               60)
+            )
         except SaltReqTimeoutError:
             return ''
 
@@ -676,12 +677,11 @@ class RemoteClient(Client):
                 'cmd': '_dir_list'}
         try:
             return self.auth.crypticle.loads(
-                    self.sreq.send(
-                        'aes',
-                        self.auth.crypticle.dumps(load),
-                        3,
-                        60)
-                    )
+                self.sreq.send('aes',
+                               self.auth.crypticle.dumps(load),
+                               3,
+                               60)
+            )
         except SaltReqTimeoutError:
             return ''
 
@@ -709,12 +709,11 @@ class RemoteClient(Client):
                 'cmd': '_file_hash'}
         try:
             return self.auth.crypticle.loads(
-                    self.sreq.send(
-                        'aes',
-                        self.auth.crypticle.dumps(load),
-                        3,
-                        60)
-                    )
+                self.sreq.send('aes',
+                               self.auth.crypticle.dumps(load),
+                               3,
+                               60)
+            )
         except SaltReqTimeoutError:
             return ''
 
@@ -726,12 +725,11 @@ class RemoteClient(Client):
                 'cmd': '_file_list'}
         try:
             return self.auth.crypticle.loads(
-                    self.sreq.send(
-                        'aes',
-                        self.auth.crypticle.dumps(load),
-                        3,
-                        60)
-                    )
+                self.sreq.send('aes',
+                               self.auth.crypticle.dumps(load),
+                               3,
+                               60)
+            )
         except SaltReqTimeoutError:
             return ''
 
@@ -742,12 +740,11 @@ class RemoteClient(Client):
         load = {'cmd': '_master_opts'}
         try:
             return self.auth.crypticle.loads(
-                    self.sreq.send(
-                        'aes',
-                        self.auth.crypticle.dumps(load),
-                        3,
-                        60)
-                    )
+                self.sreq.send('aes',
+                               self.auth.crypticle.dumps(load),
+                               3,
+                               60)
+            )
         except SaltReqTimeoutError:
             return ''
 
@@ -761,11 +758,10 @@ class RemoteClient(Client):
                 'opts': self.opts}
         try:
             return self.auth.crypticle.loads(
-                    self.sreq.send(
-                        'aes',
-                        self.auth.crypticle.dumps(load),
-                        3,
-                        60)
-                    )
+                self.sreq.send('aes',
+                               self.auth.crypticle.dumps(load),
+                               3,
+                               60)
+            )
         except SaltReqTimeoutError:
             return ''

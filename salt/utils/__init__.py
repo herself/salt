@@ -34,7 +34,7 @@ except ImportError:
 import salt.minion
 import salt.payload
 from salt.exceptions import (
-        SaltClientError, CommandNotFoundError, SaltSystemExit
+    SaltClientError, CommandNotFoundError, SaltSystemExit
 )
 
 
@@ -109,26 +109,26 @@ def get_colors(use=True):
     as empty strings so that they will not be applied
     '''
     colors = {
-            'BLACK': '\033[0;30m',
-            'DARK_GRAY': '\033[1;30m',
-            'LIGHT_GRAY': '\033[0;37m',
-            'BLUE': '\033[0;34m',
-            'LIGHT_BLUE': '\033[1;34m',
-            'GREEN': '\033[0;32m',
-            'LIGHT_GREEN': '\033[1;32m',
-            'CYAN': '\033[0;36m',
-            'LIGHT_CYAN': '\033[1;36m',
-            'RED': '\033[0;31m',
-            'LIGHT_RED': '\033[1;31m',
-            'PURPLE': '\033[0;35m',
-            'LIGHT_PURPLE': '\033[1;35m',
-            'BROWN': '\033[0;33m',
-            'YELLOW': '\033[1;33m',
-            'WHITE': '\033[1;37m',
-            'DEFAULT_COLOR': '\033[00m',
-            'RED_BOLD': '\033[01;31m',
-            'ENDC': '\033[0m',
-            }
+        'BLACK': '\033[0;30m',
+        'DARK_GRAY': '\033[1;30m',
+        'LIGHT_GRAY': '\033[0;37m',
+        'BLUE': '\033[0;34m',
+        'LIGHT_BLUE': '\033[1;34m',
+        'GREEN': '\033[0;32m',
+        'LIGHT_GREEN': '\033[1;32m',
+        'CYAN': '\033[0;36m',
+        'LIGHT_CYAN': '\033[1;36m',
+        'RED': '\033[0;31m',
+        'LIGHT_RED': '\033[1;31m',
+        'PURPLE': '\033[0;35m',
+        'LIGHT_PURPLE': '\033[1;35m',
+        'BROWN': '\033[0;33m',
+        'YELLOW': '\033[1;33m',
+        'WHITE': '\033[1;37m',
+        'DEFAULT_COLOR': '\033[00m',
+        'RED_BOLD': '\033[01;31m',
+        'ENDC': '\033[0m',
+    }
 
     try:
         fileno = sys.stdout.fileno()
@@ -188,26 +188,11 @@ def daemonize_if(opts, **kwargs):
     '''
     if 'salt-call' in sys.argv[0]:
         return
-    if not opts['multiprocessing']:
+    if not opts.get('multiprocessing', True):
         return
     if sys.platform.startswith('win'):
         return
-    # Daemonizing breaks the proc dir, so the proc needs to be rewritten
-    data = {}
-    for key, val in kwargs.items():
-        if key.startswith('__pub_'):
-            data[key[6:]] = val
-    if not 'jid' in data:
-        return
-
-    serial = salt.payload.Serial(opts)
-    proc_dir = salt.minion.get_proc_dir(opts['cachedir'])
-    fn_ = os.path.join(proc_dir, data['jid'])
     daemonize()
-    sdata = {'pid': os.getpid()}
-    sdata.update(data)
-    with fopen(fn_, 'w+') as ofile:
-        ofile.write(serial.dumps(sdata))
 
 
 def profile_func(filename=None):
@@ -294,15 +279,13 @@ def jid_to_time(jid):
     second = jid[12:14]
     micro = jid[14:]
 
-    ret = '{0}, {1} {2} {3}:{4}:{5}.{6}'.format(
-            year,
-            months[int(month)],
-            day,
-            hour,
-            minute,
-            second,
-            micro
-            )
+    ret = '{0}, {1} {2} {3}:{4}:{5}.{6}'.format(year,
+                                                months[int(month)],
+                                                day,
+                                                hour,
+                                                minute,
+                                                second,
+                                                micro)
     return ret
 
 
@@ -436,12 +419,12 @@ def copyfile(source, dest, backup_mode='', cachedir=''):
     '''
     if not os.path.isfile(source):
         raise IOError(
-                '[Errno 2] No such file or directory: {0}'.format(source)
-                )
+            '[Errno 2] No such file or directory: {0}'.format(source)
+        )
     if not os.path.isdir(os.path.dirname(dest)):
         raise IOError(
-                '[Errno 2] No such file or directory: {0}'.format(source)
-                )
+            '[Errno 2] No such file or directory: {0}'.format(source)
+        )
     bname = os.path.basename(dest)
     dname = os.path.dirname(os.path.abspath(dest))
     tgt = mkstemp(prefix=bname, dir=dname)
@@ -458,11 +441,9 @@ def copyfile(source, dest, backup_mode='', cachedir=''):
             msecs = str(int(time.time() * 1000000))[-6:]
             stamp = time.asctime().replace(' ', '_')
             stamp = '{0}{1}_{2}'.format(stamp[:-4], msecs, stamp[-4:])
-            bkpath = os.path.join(
-                    bkroot,
-                    dname[1:],
-                    '{0}_{1}'.format(bname, stamp)
-                    )
+            bkpath = os.path.join(bkroot,
+                                  dname[1:],
+                                  '{0}_{1}'.format(bname, stamp))
             if not os.path.isdir(os.path.dirname(bkpath)):
                 os.makedirs(os.path.dirname(bkpath))
             shutil.copyfile(dest, bkpath)
@@ -758,6 +739,22 @@ def fopen(*args, **kwargs):
     return fhandle
 
 
+def traverse_dict(data, target, default, delim=':'):
+    '''
+    Traverse a dict using a colon-delimited (or otherwise delimited, using
+    the "delim" param) target string. The target 'foo:bar:baz' will return
+    data['foo']['bar']['baz'] if this value exists, and will otherwise
+    return an empty dict.
+    '''
+    try:
+        for each in target.split(delim):
+            data = data[each]
+    except (KeyError, IndexError, TypeError):
+        # Encountered a non-indexable value in the middle of traversing
+        return default
+    return data
+
+
 def mkstemp(*args, **kwargs):
     '''
     Helper function which does exactly what `tempfile.mkstemp()` does but
@@ -803,6 +800,13 @@ def is_linux():
     '''
     return sys.platform.startswith('linux')
 
+@memoize
+def is_darwin():
+    '''
+    Simple function to return if a host is Darwin (OS X) or not
+    '''
+    return sys.platform.startswith('darwin')
+
 
 def check_ipc_path_max_len(uri):
     # The socket path is limited to 107 characters on Solaris and
@@ -818,3 +822,113 @@ def check_ipc_path_max_len(uri):
                 uri, ipc_path_max_len
             )
         )
+
+
+def check_state_result(running):
+    '''
+    Check the total return value of the run and determine if the running
+    dict has any issues
+    '''
+    if not isinstance(running, dict):
+        return False
+    if not running:
+        return False
+    for host in running:
+        if not isinstance(running[host], dict):
+            return False
+        for tag, ret in running[host].items():
+            if not 'result' in ret:
+                return False
+            if ret['result'] is False:
+                return False
+    return True
+
+
+def test_mode(**kwargs):
+    '''
+    Examines the kwargs passed and returns True if any kwarg which matching
+    "Test" in any variation on capitalization (i.e. "TEST", "Test", "TeSt",
+    etc) contains a True value (as determined by salt.utils.is_true).
+    '''
+    for arg, value in kwargs.iteritems():
+        try:
+            if arg.lower() == 'test' and is_true(value):
+                return True
+        except AttributeError:
+            continue
+    return False
+
+
+def is_true(value=None):
+    '''
+    Returns a boolean value representing the "truth" of the value passed. The
+    rules for what is a "True" value are:
+
+        1. Integer/float values greater than 0
+        2. The string values "True" and "true"
+        3. Any object for which bool(obj) returns True
+    '''
+    # First, try int/float conversion
+    try:
+        value = int(value)
+    except (ValueError, TypeError):
+        pass
+    try:
+        value = float(value)
+    except (ValueError, TypeError):
+        pass
+
+    # Now check for truthiness
+    if isinstance(value, (int, float)):
+        return value > 0
+    elif isinstance(value, basestring):
+        return str(value).lower() == 'true'
+    else:
+        return bool(value)
+
+
+def rm_rf(path):
+    '''
+    Platform-independent recursive delete. Includes code from
+    http://stackoverflow.com/a/2656405
+    '''
+    def _onerror(func, path, exc_info):
+        """
+        Error handler for `shutil.rmtree`.
+
+        If the error is due to an access error (read only file)
+        it attempts to add write permission and then retries.
+
+        If the error is for another reason it re-raises the error.
+
+        Usage : `shutil.rmtree(path, onerror=onerror)`
+        """
+        if is_windows() and not os.access(path, os.W_OK):
+            import stat
+            # Is the error an access error ?
+            os.chmod(path, stat.S_IWUSR)
+            func(path)
+        else:
+            raise
+
+    shutil.rmtree(path, onerror=_onerror)
+
+def option(
+        value,
+        default='',
+        opts=None,
+        pillar=None):
+    '''
+    Pass in a generic option and receive the value that will be assigned
+    '''
+    if opts is None:
+        opts = {}
+    if pillar is None:
+        pillar = {}
+    if value in opts:
+        return opts[value]
+    if value in pillar.get('master', {}):
+        return pillar['master'][value]
+    if value in pillar:
+        return pillar[value]
+    return default

@@ -27,6 +27,7 @@ _supported_dists += ('arch', 'mageia', 'meego', 'vmware', 'bluewhite64',
 # Import salt libs
 import salt.log
 import salt.utils
+import salt.utils.socket_util
 
 # Solve the Chicken and egg problem where grains need to run before any
 # of the modules are loaded and are generally available for any usage.
@@ -125,12 +126,12 @@ def _linux_cpudata():
 
 
 def _linux_gpu_data():
-    """
+    '''
     num_gpus: int
     gpus:
       - vendor: nvidia|amd|ati|...
         model: string
-    """
+    '''
     # dominant gpu vendors to search for (MUST be lowercase for matching below)
     known_vendors = ['nvidia', 'amd', 'ati', 'intel']
 
@@ -288,7 +289,7 @@ def _virtual(osdata):
     #   virtual
     #   virtual_subtype
     grains = {'virtual': 'physical'}
-    for command in ('dmidecode', 'lspci'):
+    for command in ('dmidecode', 'lspci', 'dmesg'):
         cmd = salt.utils.which(command)
 
         if not cmd:
@@ -309,7 +310,7 @@ def _virtual(osdata):
 
         output = ret['stdout']
 
-        if command == 'dmidecode':
+        if command == 'dmidecode' or command == 'dmesg':
             # Product Name: VirtualBox
             if 'Vendor: QEMU' in output:
                 # FIXME: Make this detect between kvm or qemu
@@ -323,7 +324,7 @@ def _virtual(osdata):
                 grains['virtual'] = 'VMware'
             # Manufacturer: Microsoft Corporation
             # Product Name: Virtual Machine
-            elif 'Manufacturer: Microsoft' in output and 'Virtual Machine' in output:
+            elif ': Microsoft' in output and 'Virtual Machine' in output:
                 grains['virtual'] = 'VirtualPC'
             # Manufacturer: Parallels Software International Inc.
             elif 'Parallels Software' in output:
@@ -347,10 +348,10 @@ def _virtual(osdata):
             break
     else:
         log.warn(
-            'Both \'dmidecode\' and \'lspci\' failed to execute, either '
+            'The tools \'dmidecode\', \'lspci\' and \'dmesg\' failed to execute '
             'because they do not exist on the system of the user running '
-            'this instance does not have the necessary permissions to '
-            'execute them. Grains output might not be accurate.'
+            'this instance or the user does not have the necessary permissions '
+            'to execute them. Grains output might not be accurate.'
         )
 
     choices = ('Linux', 'OpenBSD', 'HP-UX')
@@ -510,6 +511,7 @@ _OS_NAME_MAP = {
     'amazonami': 'Amazon',
     'alt': 'ALT',
     'oracleserv': 'OEL',
+    'cloudserve': 'CloudLinux',
 }
 
 # Map the 'os' grain to the 'os_family' grain
@@ -526,6 +528,8 @@ _OS_FAMILY_MAP = {
     'CloudLinux': 'RedHat',
     'OVS': 'RedHat',
     'OEL': 'RedHat',
+    'XCP': 'RedHat',
+    'XenServer': 'RedHat',
     'Mandrake': 'Mandriva',
     'ESXi': 'VMWare',
     'Mint': 'Debian',
@@ -542,6 +546,7 @@ _OS_FAMILY_MAP = {
     'SmartOS': 'Solaris',
     'Arch ARM': 'Arch',
     'ALT': 'RedHat',
+    'Trisquel': 'Debian'
 }
 
 
@@ -666,6 +671,7 @@ def os_data():
         grains['os'] = grains['kernel']
     if grains['kernel'] in ('FreeBSD', 'OpenBSD'):
         grains.update(_bsd_cpudata(grains))
+        grains['osrelease'] = grains['kernelrelease'].split('-')[0]
     if not grains['os']:
         grains['os'] = 'Unknown {0}'.format(grains['kernel'])
         grains['os_family'] = 'Unknown'
@@ -719,6 +725,29 @@ def hostname():
     grains['fqdn'] = socket.getfqdn()
     (grains['host'], grains['domain']) = grains['fqdn'].partition('.')[::2]
     return grains
+
+
+def append_domain():
+    '''
+    Return append_domain if set
+    '''
+    grain = {}
+    if 'append_domain' in __opts__:
+        grain['append_domain'] = __opts__['append_domain']
+    return grain
+
+
+def ip4():
+    '''
+    Return a list of ipv4 addrs
+    '''
+    ips = []
+    if salt.utils.is_windows():
+        # TODO: Add windows ip addrs here
+        pass
+    else:
+        ips = salt.utils.socket_util.ip4_addrs()
+    return {'ipv4': ips}
 
 
 def path():

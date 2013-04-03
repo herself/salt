@@ -78,16 +78,14 @@ def stop(name):
     return not __salt__['cmd.retcode'](cmd)
 
 
-def restart(name):
+def restart(name, **kwargs):
     '''
-    Restart the named service
+    Restart the specified service
 
     CLI Example::
 
         salt '*' service.restart <service name>
     '''
-    if name == 'salt-minion':
-        salt.utils.daemonize_if(__opts__)
     cmd = os.path.join(GRAINMAP[__grains__['os']],
             name + ' restart')
     return not __salt__['cmd.retcode'](cmd)
@@ -108,7 +106,7 @@ def status(name, sig=None):
 
 def reload(name):
     '''
-    Restart the named service
+    Restart the specified service
 
     CLI Example::
 
@@ -117,3 +115,27 @@ def reload(name):
     cmd = os.path.join(GRAINMAP[__grains__['os']],
             name + ' reload')
     return not __salt__['cmd.retcode'](cmd)
+
+
+def get_all():
+    '''
+    Return a list of all available services
+
+    CLI Example::
+
+        salt '*' service.get_al
+    '''
+    if not os.path.isdir(GRAINMAP[__grains__['os']]):
+        return []
+    return sorted(os.listdir(GRAINMAP[__grains__['os']]))
+
+
+def available(name):
+    '''
+    Return if the specified service is available
+
+    CLI Example::
+
+        salt '*' service.available
+    '''
+    return name in get_all()

@@ -11,11 +11,13 @@ import os
 import shutil
 import subprocess
 import functools
+import sys
+import json
 
 # Import salt libs
 import salt.utils
 from salt.exceptions import CommandExecutionError
-import salt.grains.extra 
+import salt.grains.extra
 
 # Only available on posix systems, nonfatal on windows
 try:
@@ -81,6 +83,17 @@ def _chugid(runas):
             )
 
 
+def _chugid_and_umask(runas, umask):
+    '''
+    Helper method for for subprocess.Popen to initialise uid/gid and umask
+    for the new process.
+    '''
+    if runas is not None:
+        _chugid(runas)
+    if umask is not None:
+        os.umask(umask)
+
+
 def _render_cmd(cmd, cwd, template):
     '''
     If template is a valid template engine, process the cmd and cwd through
@@ -128,6 +141,7 @@ def _render_cmd(cmd, cwd, template):
     cwd = _render(cwd)
     return (cmd, cwd)
 
+
 def _run(cmd,
          cwd=None,
          stdout=subprocess.PIPE,
@@ -139,7 +153,8 @@ def _run(cmd,
          env=(),
          rstrip=True,
          retcode=False,
-         template=None):
+         template=None,
+         umask=None):
     '''
     Do the DRY thing and only call subprocess.Popen() once
     '''
@@ -154,6 +169,8 @@ def _run(cmd,
         # the euid might not have access to it. See issue #1844
         if not os.access(cwd, os.R_OK):
             cwd = '/'
+            if salt.utils.is_windows():
+                cwd = os.tempnam()[:3]
 
     if not salt.utils.is_windows():
         if not os.path.isfile(shell) or not os.access(shell, os.X_OK):
@@ -181,6 +198,27 @@ def _run(cmd,
         except KeyError:
             msg = 'User \'{0}\' is not available'.format(runas)
             raise CommandExecutionError(msg)
+        try:
+            # Getting the environment for the runas user
+            # There must be a better way to do this.
+            if __grains__['os'] in ['MacOS', 'Darwin']:
+                env_cmd = ('sudo -i -u {1} -- "{2} -c \'import os, json;'
+                           'print(json.dumps(os.environ.__dict__))\'"').format(
+                                   shell, runas, sys.executable)
+            else:
+                env_cmd = ('su -s {0} - {1} -c "{2} -c \'import os, json;'
+                           'print(json.dumps(os.environ.__dict__))\'"').format(
+                                   shell, runas, sys.executable)
+            env = json.loads(
+                    subprocess.Popen(
+                        env_cmd,
+                        shell=True,
+                        stdout=subprocess.PIPE
+                        ).communicate()[0])['data']
+        except ValueError:
+            msg = 'Environment could not be retrieved for User \'{0}\''.format(runas)
+            raise CommandExecutionError(msg)
+
 
     if not quiet:
         # Put the most common case first
@@ -198,8 +236,11 @@ def _run(cmd,
         # Salt only knows how to parse English words
         # Don't override if the user has passed LC_ALL
         env.setdefault('LC_ALL', 'C')
+    else:
+        # On Windows set the codepage to US English.
+        cmd = 'chcp 437 > nul & ' + cmd
 
-    run_env = os.environ
+    run_env = os.environ.copy()
     run_env.update(env)
     kwargs = {'cwd': cwd,
               'shell': True,
@@ -207,8 +248,19 @@ def _run(cmd,
               'stdout': stdout,
               'stderr': stderr}
 
-    if runas:
-        kwargs['preexec_fn'] = functools.partial(_chugid, runas)
+    if umask:
+        try:
+            _umask = int(str(umask).lstrip('0'), 8)
+            if not _umask:
+                raise ValueError('Zero umask not allowed.')
+        except ValueError:
+            msg = 'Invalid umask: \'{0}\''.format(umask)
+            raise CommandExecutionError(msg)
+    else:
+        _umask = None
+
+    if runas or umask:
+        kwargs['preexec_fn'] = functools.partial(_chugid_and_umask, runas, _umask)
 
     if not salt.utils.is_windows():
         # close_fds is not supported on Windows platforms if you redirect
@@ -240,24 +292,24 @@ def _run(cmd,
     return ret
 
 
-def _run_quiet(cmd, cwd=None, runas=None, shell=DEFAULT_SHELL, env=(), template=None):
+def _run_quiet(cmd, cwd=None, runas=None, shell=DEFAULT_SHELL, env=(), template=None, umask=None):
     '''
     Helper for running commands quietly for minion startup
     '''
     return _run(cmd, runas=runas, cwd=cwd, stderr=subprocess.STDOUT,
-                quiet=True, shell=shell, env=env, template=template)['stdout']
+                quiet=True, shell=shell, env=env, template=template, umask=umask)['stdout']
 
 
-def _run_all_quiet(cmd, cwd=None, runas=None, shell=DEFAULT_SHELL, env=(), template=None):
+def _run_all_quiet(cmd, cwd=None, runas=None, shell=DEFAULT_SHELL, env=(), template=None, umask=None):
     '''
     Helper for running commands quietly for minion startup.
     Returns a dict of return data
     '''
-    return _run(cmd, runas=runas, cwd=cwd, shell=shell, env=env, quiet=True, template=template)
+    return _run(cmd, runas=runas, cwd=cwd, shell=shell, env=env, quiet=True, template=template, umask=umask)
 
 
 def run(cmd, cwd=None, runas=None, shell=DEFAULT_SHELL, env=(),
-        template=None, rstrip=True):
+        template=None, rstrip=True, umask=None):
     '''
     Execute the passed command and return the output as a string
 
@@ -274,13 +326,13 @@ def run(cmd, cwd=None, runas=None, shell=DEFAULT_SHELL, env=(),
     '''
     out = _run(cmd, runas=runas, shell=shell, cwd=cwd,
                stderr=subprocess.STDOUT, env=env, template=template,
-               rstrip=rstrip)['stdout']
+               rstrip=rstrip, umask=umask)['stdout']
     log.debug('output: {0}'.format(out))
     return out
 
 
 def run_stdout(cmd, cwd=None, runas=None, shell=DEFAULT_SHELL, env=(),
-               template=None, rstrip=True):
+               template=None, rstrip=True, umask=None):
     '''
     Execute a command, and only return the standard out
 
@@ -296,13 +348,13 @@ def run_stdout(cmd, cwd=None, runas=None, shell=DEFAULT_SHELL, env=(),
 
     '''
     stdout = _run(cmd, runas=runas, cwd=cwd, shell=shell, env=env,
-                  template=template, rstrip=rstrip)["stdout"]
+                  template=template, rstrip=rstrip, umask=umask)["stdout"]
     log.debug('stdout: {0}'.format(stdout))
     return stdout
 
 
 def run_stderr(cmd, cwd=None, runas=None, shell=DEFAULT_SHELL, env=(),
-               template=None, rstrip=True):
+               template=None, rstrip=True, umask=None):
     '''
     Execute a command and only return the standard error
 
@@ -318,13 +370,13 @@ def run_stderr(cmd, cwd=None, runas=None, shell=DEFAULT_SHELL, env=(),
 
     '''
     stderr = _run(cmd, runas=runas, cwd=cwd, shell=shell, env=env,
-                  template=template, rstrip=rstrip)["stderr"]
+                  template=template, rstrip=rstrip, umask=umask)["stderr"]
     log.debug('stderr: {0}'.format(stderr))
     return stderr
 
 
 def run_all(cmd, cwd=None, runas=None, shell=DEFAULT_SHELL, env=(),
-            template=None, rstrip=True):
+            template=None, rstrip=True, umask=None):
     '''
     Execute the passed command and return a dict of return data
 
@@ -340,7 +392,7 @@ def run_all(cmd, cwd=None, runas=None, shell=DEFAULT_SHELL, env=(),
 
     '''
     ret = _run(cmd, runas=runas, cwd=cwd, shell=shell, env=env,
-               template=template, rstrip=rstrip)
+               template=template, rstrip=rstrip, umask=umask)
 
     if ret['retcode'] != 0:
         rcode = ret['retcode']
@@ -360,7 +412,8 @@ def run_all(cmd, cwd=None, runas=None, shell=DEFAULT_SHELL, env=(),
     return ret
 
 
-def retcode(cmd, cwd=None, runas=None, shell=DEFAULT_SHELL, env=(), template=None):
+def retcode(cmd, cwd=None, runas=None, shell=DEFAULT_SHELL, env=(),
+            template=None, umask=None):
     '''
     Execute a shell command and return the command's return code.
 
@@ -382,7 +435,8 @@ def retcode(cmd, cwd=None, runas=None, shell=DEFAULT_SHELL, env=(), template=Non
             shell=shell,
             env=env,
             retcode=True,
-            template=template
+            template=template,
+            umask=umask
             )['retcode']
 
 
@@ -394,6 +448,7 @@ def script(
         shell=DEFAULT_SHELL,
         env='base',
         template='jinja',
+        umask=None,
         **kwargs):
     '''
     Download a script from a remote location and execute the script locally.
@@ -411,7 +466,7 @@ def script(
         salt '*' cmd.script salt://scripts/runme.sh
         salt '*' cmd.script salt://scripts/runme.sh 'arg1 arg2 "arg 3"'
     '''
-    path = salt.utils.mkstemp()
+    path = salt.utils.mkstemp(dir=cwd)
     if template:
         __salt__['cp.get_template'](source, path, template, env, **kwargs)
     else:
@@ -427,6 +482,7 @@ def script(
             runas=runas,
             shell=shell,
             retcode=kwargs.get('retcode', False),
+            umask=umask
             )
     os.remove(path)
     return ret
@@ -439,6 +495,7 @@ def script_retcode(
         shell=DEFAULT_SHELL,
         env='base',
         template='jinja',
+        umask=None,
         **kwargs):
     '''
     Download a script from a remote location and execute the script locally.
@@ -464,6 +521,7 @@ def script_retcode(
             env,
             template,
             retcode=True,
+            umask=umask,
             **kwargs)['retcode']
 
 

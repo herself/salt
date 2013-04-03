@@ -7,6 +7,9 @@ A module to wrap pacman calls, since Arch is the best
 import logging
 import re
 
+# Import salt libs
+import salt.utils
+
 log = logging.getLogger(__name__)
 
 
@@ -28,7 +31,7 @@ def _list_removed(old, new):
     return pkgs
 
 
-def available_version(*names):
+def latest_version(*names, **kwargs):
     '''
     Return the latest version of the named package available for upgrade or
     installation. If more than one package name is specified, a dict of
@@ -39,8 +42,8 @@ def available_version(*names):
 
     CLI Example::
 
-        salt '*' pkg.available_version <package name>
-        salt '*' pkg.available_version <package1> <package2> <package3> ...
+        salt '*' pkg.latest_version <package name>
+        salt '*' pkg.latest_version <package1> <package2> <package3> ...
     '''
     if len(names) == 0:
         return ''
@@ -67,6 +70,9 @@ def available_version(*names):
         return ret[names[0]]
     return ret
 
+# available_version is being deprecated
+available_version = latest_version
+
 
 def upgrade_available(name):
     '''
@@ -76,7 +82,7 @@ def upgrade_available(name):
 
         salt '*' pkg.upgrade_available <package name>
     '''
-    return available_version(name) != ''
+    return latest_version(name) != ''
 
 
 def list_upgrades():
@@ -99,7 +105,7 @@ def list_upgrades():
     return upgrades
 
 
-def version(*names):
+def version(*names, **kwargs):
     '''
     Returns a string representing the package version or an empty string if not
     installed. If more than one package name is specified, a dict of
@@ -110,19 +116,10 @@ def version(*names):
         salt '*' pkg.version <package name>
         salt '*' pkg.version <package1> <package2> <package3> ...
     '''
-    pkgs = list_pkgs()
-    if len(names) == 0:
-        return ''
-    elif len(names) == 1:
-        return pkgs.get(names[0], '')
-    else:
-        ret = {}
-        for name in names:
-            ret[name] = pkgs.get(name, '')
-        return ret
+    return __salt__['pkg_resource.version'](*names, **kwargs)
 
 
-def list_pkgs():
+def list_pkgs(versions_as_list=False):
     '''
     List the packages currently installed as a dict::
 
@@ -132,6 +129,7 @@ def list_pkgs():
 
         salt '*' pkg.list_pkgs
     '''
+    versions_as_list = salt.utils.is_true(versions_as_list)
     cmd = 'pacman -Q'
     ret = {}
     out = __salt__['cmd.run'](cmd).splitlines()
@@ -145,7 +143,10 @@ def list_pkgs():
                       'line: "{0}"'.format(line))
         else:
             __salt__['pkg_resource.add_pkg'](ret, name, version)
+
     __salt__['pkg_resource.sort_pkglist'](ret)
+    if not versions_as_list:
+        __salt__['pkg_resource.stringify'](ret)
     return ret
 
 
@@ -269,8 +270,7 @@ def install(name=None,
                 log.error(problem)
             return {}
 
-        # Catch both boolean input from state and string input from CLI
-        if refresh is True or str(refresh).lower() == 'true':
+        if salt.utils.is_true(refresh):
             cmd = 'pacman -Syu --noprogressbar --noconfirm ' \
                   '"{0}"'.format('" "'.join(targets))
         else:
@@ -426,5 +426,3 @@ def file_dict(*packages):
                 ret[comps[0]] = []
             ret[comps[0]].append((' '.join(comps[1:])))
     return {'errors': errors, 'packages': ret}
-
-

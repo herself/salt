@@ -13,6 +13,7 @@ from salt.version import __version__  # pylint: disable-msg=W402
 from salt.utils import migrations
 
 try:
+    import salt.master
     from salt.utils import parsers
     from salt.utils.verify import check_user, verify_env, verify_socket
     from salt.utils.verify import verify_files
@@ -71,7 +72,7 @@ class Master(parsers.MasterOptionParser):
             sys.exit(err.errno)
 
         self.setup_logfile_logger()
-        logger.warn('Setting up the Salt Master')
+        logger.info('Setting up the Salt Master')
 
         if not verify_socket(self.config['interface'],
                              self.config['publish_port'],
@@ -126,10 +127,18 @@ class Minion(parsers.MinionOptionParser):
 
         try:
             if self.config['verify_env']:
-                confd = os.path.join(
-                    os.path.dirname(self.config['conf_file']),
-                    'minion.d'
-                )
+                confd = self.config.get('default_include')
+                if confd:
+                  # If 'default_include' is specified in config, then use it
+                  if '*' in confd:
+                      # Value is of the form "minion.d/*.conf"
+                      confd = os.path.dirname(confd)
+                  if not os.path.isabs(confd):
+                      # If configured 'default_include' is not an absolute path,
+                      # consider it relative to folder of 'conf_file' (/etc/salt by default)
+                      confd = os.path.join(os.path.dirname(self.config['conf_file']), confd)
+                else:
+                    confd = os.path.join(os.path.dirname(self.config['conf_file']), 'minion.d')
                 verify_env(
                     [
                         self.config['pki_dir'],
@@ -157,7 +166,7 @@ class Minion(parsers.MinionOptionParser):
             sys.exit(err.errno)
 
         self.setup_logfile_logger()
-        logger.warn(
+        logger.info(
             'Setting up the Salt Minion "{0}"'.format(
                 self.config['id']
             )
@@ -170,8 +179,8 @@ class Minion(parsers.MinionOptionParser):
         # the boot process waiting for a key to be accepted on the master.
         # This is the latest safe place to daemonize
         self.daemonize_if_required()
-        self.minion = salt.minion.Minion(self.config)
         self.set_pidfile()
+        self.minion = salt.minion.Minion(self.config)
 
     def start(self):
         '''
@@ -241,7 +250,7 @@ class Syndic(parsers.SyndicOptionParser):
             sys.exit(err.errno)
 
         self.setup_logfile_logger()
-        logger.warn(
+        logger.info(
             'Setting up the Salt Syndic Minion "{0}"'.format(
                 self.config['id']
             )
