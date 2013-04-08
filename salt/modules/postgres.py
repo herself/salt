@@ -23,6 +23,7 @@ import pipes
 import logging
 import csv
 import StringIO
+import os
 
 # Import salt libs
 import salt.utils
@@ -49,28 +50,34 @@ def _run_psql(cmd, runas=None, password=None, host=None,
     if runas is None:
         if not host:
             host = __salt__['config.option']('postgres.host')
-        if host is None or \
-                host == '' or \
-                host[0] == '/':
+        if not host or host.startswith('/'):
             if 'FreeBSD' in __grains__['os_family']:
                 runas = 'pgsql'
             else:
                 runas = 'postgres'
 
-    if runas is not None:
-        kwargs["runas"] = runas
+    if runas:
+        kwargs['runas'] = runas
 
-    if not password:
+    if password is None:
         password = __salt__['config.option']('postgres.pass')
-    if password:
-        kwargs["env"] = {"PGPASSWORD": password}
-        # PGPASSWORD has been deprecated, supposedly leading to
-        # protests. Currently, this seems the simplest way to solve
-        # this. If needed in the future, a tempfile could also be
-        # written and the filename set to the PGPASSFILE variable. see
-        # http://www.postgresql.org/docs/8.4/static/libpq-pgpass.html
+    if password is not None:
+        pgpassfile = salt.utils.mkstemp(text=True)
+        with salt.utils.fopen(pgpassfile, 'w') as fp_:
+            fp_.write('{0}:*:*:{1}:{2}'.format(
+                'localhost' if not host or host.startswith('/') else host,
+                runas if runas else '*',
+                password
+            ))
+            __salt__['file.chown'](pgpassfile, runas, '')
+            kwargs['env'] = {'PGPASSFILE': pgpassfile}
 
-    return __salt__[run_cmd](cmd, **kwargs)
+    ret = __salt__[run_cmd](cmd, **kwargs)
+
+    if password is not None and not __salt__['file.remove'](pgpassfile):
+        log.warning('Remove PGPASSFILE failed')
+
+    return ret
 
 
 def version(user=None, host=None, port=None, maintenance_db=None,
@@ -107,7 +114,7 @@ def _connection_defaults(user=None, host=None, port=None, maintenance_db=None,
         port = __salt__['config.option']('postgres.port')
     if not maintenance_db:
         maintenance_db = __salt__['config.option']('postgres.maintenance_db')
-    if not password:
+    if password is None:
         password = __salt__['config.option']('postgres.pass')
 
     return (user, host, port, maintenance_db, password)
@@ -130,7 +137,7 @@ def _psql_cmd(*args, **kwargs):
     cmd = [salt.utils.which('psql'),
            '--no-align',
            '--no-readline']
-    if not password:
+    if password is None:
         cmd += ['--no-password']
     if user:
         cmd += ['--username', user]
@@ -138,34 +145,36 @@ def _psql_cmd(*args, **kwargs):
         cmd += ['--host', host]
     if port:
         cmd += ['--port', port]
-    if maintenance_db is None:
-        maintenance_db = "postgres"
+    if not maintenance_db:
+        maintenance_db = 'postgres'
     cmd += ['--dbname', maintenance_db]
     cmd += args
     cmdstr = ' '.join(map(pipes.quote, cmd))
     return cmdstr
 
 
-def psql_query(query, user=None, host=None, port=None, db=None,
-            password=None, runas=None):
+def psql_query(query, user=None, host=None, port=None, maintenance_db=None,
+               password=None, runas=None):
     '''
-    Run an SQL-Query and return the results as a dictionary. This command
+    Run an SQL-Query and return the results as a list. This command
     only supports SELECT statements.
 
     CLI Example::
 
         salt '*' postgres.psql_query 'select * from pg_stat_activity'
     '''
-    ret = {}
+    ret = []
 
-    csv_query = 'COPY ({0}) TO STDOUT WITH CSV DELIMITER \';\' QUOTE \'"\' HEADER'.format(query.strip().rstrip(';'))
+    csv_query = 'COPY ({0}) TO STDOUT WITH CSV HEADER'.format(
+        query.strip().rstrip(';'))
 
     cmd = _psql_cmd(
-            # always use the same datestyle settings to allow parsing dates
-            # regardless what server settings are configured
-            '-v', 'datestyle=ISO,MDY',
-            '-c', csv_query,
-            host=host, user=user, port=port, db=db, password=password)
+        # always use the same datestyle settings to allow parsing dates
+        # regardless what server settings are configured
+        '-v', 'datestyle=ISO,MDY',
+        '-c', csv_query,
+        host=host, user=user, port=port, maintenance_db=maintenance_db,
+        password=password)
 
     cmdret = _run_psql(cmd, runas=runas, password=password)
 
@@ -174,13 +183,14 @@ def psql_query(query, user=None, host=None, port=None, db=None,
 
     csv_file = StringIO.StringIO(cmdret['stdout'])
     header = {}
-    row_counter = 0
-    for row in csv.reader(csv_file, delimiter=';', quotechar='"'):
-        if row_counter == 0:
+    for row in csv.reader(csv_file, delimiter=',', quotechar='"'):
+        if not row:
+            continue
+        if not header:
             header = row
-        else:
-            ret[row_counter-1] = dict(zip(header, row))
-        row_counter += 1
+            continue
+        ret.append(dict(zip(header, row)))
+
     return ret
 
 
@@ -201,13 +211,15 @@ def db_list(user=None, host=None, port=None, maintenance_db=None,
     query = 'SELECT datname as "Name", pga.rolname as "Owner", ' \
             'pg_encoding_to_char(encoding) as "Encoding", ' \
             'datcollate as "Collate", datctype as "Ctype", ' \
-            'datacl as "Access privileges" FROM pg_database pgd, ' \
-            'pg_roles pga WHERE pga.oid = pgd.datdba'
+            'datacl as "Access privileges", spcname as "Tablespace" ' \
+            'FROM pg_database pgd, pg_roles pga, pg_tablespace pgts ' \
+            'WHERE pga.oid = pgd.datdba AND pgts.oid = pgd.dattablespace'
 
-    rows = psql_query(query, runas=runas,
-                    host=host, user=user, port=port, db=maintenance_db, password=password)
+    rows = psql_query(query, runas=runas, host=host, user=user,
+                      port=port, maintenance_db=maintenance_db,
+                      password=password)
 
-    for row in rows.itervalues():
+    for row in rows:
         ret[row['Name']] = row
         ret[row['Name']].pop('Name')
 
@@ -238,7 +250,6 @@ def db_create(name,
               password=None,
               tablespace=None,
               encoding=None,
-              locale=None,
               lc_collate=None,
               lc_ctype=None,
               owner=None,
@@ -287,6 +298,37 @@ def db_create(name,
     return ret['retcode'] == 0
 
 
+def db_alter(name, user=None, host=None, port=None, maintenance_db=None,
+             password=None, tablespace=None, owner=None, runas=None):
+    '''
+    Change tablesbase or/and owner of databse.
+
+    CLI Example::
+
+        salt '*' postgres.db_alter dbname owner=otheruser
+    '''
+    if not any((tablespace, owner)):
+        return True  # Nothing todo?
+
+    queries = []
+    if owner:
+        queries.append('ALTER DATABASE "{0}" OWNER TO "{1}"'.format(
+            name, owner
+        ))
+    if tablespace:
+        queries.append('ALTER DATABASE "{0}" SET TABLESPACE "{1}"'.format(
+            name, tablespace
+        ))
+    for Q in queries:
+        cmd = _psql_cmd('-c', Q, user=user, host=host, port=port,
+                        maintenance_db=maintenance_db, password=password)
+        ret = _run_psql(cmd, runas=runas, password=password, host=host)
+        if ret['retcode'] != 0:
+            return False
+
+    return True
+
+
 def db_remove(name, user=None, host=None, port=None, maintenance_db=None,
               password=None, runas=None):
     '''
@@ -328,26 +370,33 @@ def user_list(user=None, host=None, port=None, maintenance_db=None,
     if len(ver) >= 2 and int(ver[0]) >= 9 and int(ver[1]) >= 1:
         query = (
             'SELECT rolname as "name", rolsuper as "superuser", '
-            'rolinherit as "inherits privileges", rolcreaterole as "can create roles", '
-            'rolcreatedb as "can create databases", rolcatupdate as "can update system catalogs", '
+            'rolinherit as "inherits privileges", '
+            'rolcreaterole as "can create roles", '
+            'rolcreatedb as "can create databases", '
+            'rolcatupdate as "can update system catalogs", '
             'rolcanlogin as "can login", rolreplication as "replication", '
-            'rolconnlimit as "connections", rolvaliduntil::timestamp(0) as "expiry time", '
-            'rolconfig  as "defaults variables"'
+            'rolconnlimit as "connections", '
+            'rolvaliduntil::timestamp(0) as "expiry time", '
+            'rolconfig  as "defaults variables" '
             'FROM pg_roles'
         )
     else:
         query = (
             'SELECT rolname as "name", rolsuper as "superuser", '
-            'rolinherit as "inherits privileges", rolcreaterole as "can create roles", '
-            'rolcreatedb as "can create databases", rolcatupdate as "can update system catalogs", '
+            'rolinherit as "inherits privileges", '
+            'rolcreaterole as "can create roles", '
+            'rolcreatedb as "can create databases", '
+            'rolcatupdate as "can update system catalogs", '
             'rolcanlogin as "can login", NULL as "replication", '
-            'rolconnlimit as "connections", rolvaliduntil::timestamp(0) as "expiry time", '
-            'rolconfig  as "defaults variables"'
+            'rolconnlimit as "connections", '
+            'rolvaliduntil::timestamp(0) as "expiry time", '
+            'rolconfig  as "defaults variables" '
             'FROM pg_roles'
         )
 
-    rows = psql_query(query, runas=runas,
-                    host=host, user=user, port=port, db=maintenance_db, password=password)
+    rows = psql_query(query, runas=runas, host=host, user=user,
+                      port=port, maintenance_db=maintenance_db,
+                      password=password)
 
     def get_bool(rowdict, key):
         if rowdict[key] == 't':
@@ -357,16 +406,16 @@ def user_list(user=None, host=None, port=None, maintenance_db=None,
         else:
             return None
 
-    for row in rows.itervalues():
+    for row in rows:
         retrow = {}
         for key in ('superuser', 'inherits privileges', 'can create roles',
-              'can create databases', 'can update system catalogs',
-              'can login', 'replication', 'connections'):
+                    'can create databases', 'can update system catalogs',
+                    'can login', 'replication', 'connections'):
             retrow[key] = get_bool(row, key)
         for date_key in ('expiry time',):
             try:
                 retrow[date_key] = datetime.datetime.strptime(
-                        row['date_key'], '%Y-%m-%d %H:%M:%S')
+                    row['date_key'], '%Y-%m-%d %H:%M:%S')
             except (ValueError, KeyError):
                 retrow[date_key] = None
         retrow['defaults variables'] = row['defaults variables']
@@ -425,7 +474,7 @@ def _role_create(name,
         return False
 
     sub_cmd = 'CREATE {0} "{1}" WITH'.format(create_type, name, )
-    if rolepassword:
+    if rolepassword is not None:
         if encrypted:
             sub_cmd = '{0} ENCRYPTED'.format(sub_cmd, )
         escaped_password = rolepassword.replace('\'', '\'\'')
@@ -512,7 +561,7 @@ def _role_update(name,
         return False
 
     sub_cmd = 'ALTER ROLE {0} WITH'.format(name, )
-    if rolepassword:
+    if rolepassword is not None:
         sub_cmd = '{0} PASSWORD \'{1}\''.format(sub_cmd, rolepassword)
     if createdb:
         sub_cmd = '{0} CREATEDB'.format(sub_cmd, )
@@ -520,7 +569,7 @@ def _role_update(name,
         sub_cmd = '{0} CREATEUSER'.format(sub_cmd, )
     if encrypted:
         sub_cmd = '{0} ENCRYPTED'.format(sub_cmd, )
-    if encrypted:
+    if replication:
         sub_cmd = '{0} REPLICATION'.format(sub_cmd, )
 
     if sub_cmd.endswith('WITH'):

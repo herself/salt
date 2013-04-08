@@ -19,6 +19,9 @@ from salt.exceptions import CommandExecutionError, CommandNotFoundError
 logger = logging.getLogger(__name__)  # pylint: disable-msg=C0103
 
 
+VALID_PROTOS = ['http', 'https', 'ftp']
+
+
 def _get_pip_bin(bin_env):
     '''
     Return the pip command to call, either from a virtualenv, an argument
@@ -184,29 +187,33 @@ def install(pkgs=None,
             cmd=cmd, pkg=pkg)
 
     treq = None
-    if requirements and requirements.startswith('salt://'):
-        cached_requirements = __salt__['cp.is_cached'](requirements, __env__)
-        if not cached_requirements:
-            # It's not cached, let's cache it.
-            cached_requirements = __salt__['cp.cache_file'](requirements, __env__)
-        # Check if the master version has changed.
-        if __salt__['cp.hash_file'](requirements, __env__) != \
-                __salt__['cp.hash_file'](cached_requirements, __env__):
-            cached_requirements = __salt__['cp.cache_file'](requirements, __env__)
-        if not cached_requirements:
-            return {
-                'result': False,
-                'comment': (
-                    'pip requirements file \'{0}\' not found'.format(
-                        requirements
+    if requirements:
+        if requirements.startswith('salt://'):
+            cached_requirements = __salt__['cp.is_cached'](requirements,
+                    __env__)
+            if not cached_requirements:
+                # It's not cached, let's cache it.
+                cached_requirements = __salt__['cp.cache_file'](requirements,
+                        __env__)
+            # Check if the master version has changed.
+            if __salt__['cp.hash_file'](requirements, __env__) != \
+                    __salt__['cp.hash_file'](cached_requirements, __env__):
+                cached_requirements = __salt__['cp.cache_file'](requirements,
+                        __env__)
+            if not cached_requirements:
+                return {
+                    'result': False,
+                    'comment': (
+                        'pip requirements file \'{0}\' not found'.format(
+                            requirements
+                        )
                     )
-                )
-            }
+                }
 
-            treq = salt.utils.mkstemp()
-            shutil.copyfile(req, treq)
-        else:
-            treq = requirements
+                treq = salt.utils.mkstemp()
+                shutil.copyfile(req, treq)
+            else:
+                treq = requirements
         cmd = '{cmd} --requirement "{requirements}" '.format(
             cmd=cmd, requirements=treq or requirements)
 
@@ -253,19 +260,19 @@ def install(pkgs=None,
             _get_pip_bin(bin_env), editable=editable)
 
     if find_links:
-        if not find_links.startswith('http://'):
+        if not salt.utils.valid_url(find_links, VALID_PROTOS):
             raise Exception('\'{0}\' must be a valid url'.format(find_links))
         cmd = '{cmd} --find-links={find_links}'.format(
             cmd=cmd, find_links=find_links)
 
     if index_url:
-        if not index_url.startswith('http://'):
+        if not salt.utils.valid_url(index_url, VALID_PROTOS):
             raise Exception('\'{0}\' must be a valid url'.format(index_url))
         cmd = '{cmd} --index-url="{index_url}" '.format(
             cmd=cmd, index_url=index_url)
 
     if extra_index_url:
-        if not extra_index_url.startswith('http://'):
+        if not salt.utils.valid_url(extra_index_url, VALID_PROTOS):
             raise Exception(
                 '\'{0}\' must be a valid url'.format(extra_index_url)
             )

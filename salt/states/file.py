@@ -26,6 +26,22 @@ which makes use of the jinja templating system would look like this:
             custom_var: "default value"
             other_var: 123
 
+The ``source`` parameter can be specified as a list. IF this is done, then the
+first file to be matched will be the one that is used. This allows you to have
+a default file on which to fall back if the desired file does not exist on the
+salt fileserver. Here's an example:
+
+.. code-block:: yaml
+    /etc/foo.conf
+      file.managed:
+        - source:
+          - salt://foo.conf.{{ grains['fqdn'] }}
+          - salt://foo.conf.fallback
+        - user: foo
+        - group: users
+        - mode: 644
+
+
 Directories can be managed via the ``directory`` function. This function can
 create and enforce the permissions on a directory. A directory statement will
 look like this:
@@ -995,6 +1011,7 @@ def recurse(name,
             backup='',
             include_pat=None,
             exclude_pat=None,
+            maxdepth=None,
             **kwargs):
     '''
     Recurse through a subdirectory on the master and copy said subdirectory
@@ -1070,6 +1087,16 @@ def recurse(name,
                                                APPDATA.02,.. for exclusion
           - exclude: E@(APPDATA)|(TEMPDATA) :: regexp matches APPDATA
                                                or TEMPDATA for exclusion
+
+    maxdepth
+        When copying, only copy paths which are depth maxdepth from the source
+        path.
+        Example::
+
+          - maxdepth: 0      :: Only include files located in the source
+                                directory
+          - maxdepth: 1      :: Only include files located in the source
+                                or immediate subdirectories
     '''
     user = _test_owner(kwargs, user=user)
     ret = {'name': name,
@@ -1224,6 +1251,17 @@ def recurse(name,
 
         relname = os.path.relpath(fn_, srcpath)
 
+        # Check for maxdepth of the relative path
+        if not maxdepth is None:
+            # Since paths are all master, just use posix separator
+            relpieces = relname.split('/')
+            # Handle empty directories (include_empty==true) by removing the
+            # the last piece if it is an empty string
+            if not relpieces[-1]:
+                relpieces = relpieces[:-1]
+            if len(relpieces) > maxdepth + 1:
+                continue
+
         #- Check if it is to be excluded. Match only part of the path
         # relative to the target directory
         if not _check_include_exclude(relname, include_pat, exclude_pat):
@@ -1243,7 +1281,7 @@ def recurse(name,
     if include_empty:
         mdirs = __salt__['cp.list_master_dirs'](env)
         for mdir in mdirs:
-            if not mdir.startswith(srcpath): #same as above
+            if not mdir.startswith(srcpath):
                 continue
             mdest = os.path.join(name, os.path.relpath(mdir, srcpath))
             manage_directory(mdest)
@@ -1284,11 +1322,9 @@ def sed(name, before, after, limit='', backup='.bak', options='-r -e',
     '''
     Maintain a simple edit to a file
 
-    The file will be searched for the ``before`` pattern before making the edit
-    and then searched for the ``after`` pattern to verify the edit was
-    successful using :mod:`salt.modules.file.contains`. In general the
-    ``limit`` pattern should be as specific as possible and ``before`` and
-    ``after`` should contain the minimal text to be changed.
+    The file will be searched for the ``before`` pattern before making the
+    edit.  In general the ``limit`` pattern should be as specific as possible
+    and ``before`` and ``after`` should contain the minimal text to be changed.
 
     Usage::
 
@@ -1314,49 +1350,45 @@ def sed(name, before, after, limit='', backup='.bak', options='-r -e',
     if not check_res:
         return _error(ret, check_msg)
 
-    # sed returns no output if the edit matches anything or not so we'll have
-    # to look for ourselves
-
     # Mandate that before and after are strings
     before = str(before)
     after = str(after)
 
     # Look for the pattern before attempting the edit
-    if not __salt__['file.contains_regex_multiline'](name, before):
-        # Pattern not found; try to guess why
-        if __salt__['file.contains'](name, after):
-            ret['comment'] = 'Edit already performed'
-            ret['result'] = True
-            return ret
-        else:
-            ret['comment'] = 'Pattern not matched'
-            return ret
+    if not __salt__['file.contains_regex'](name, before):
+        # Pattern not found; don't try to guess why, just tell the user there
+        # were no changes made, as the changes should only be made once anyway.
+        # This makes it so users can use backreferences without the state
+        # coming back as failed all the time.
+        ret['comment'] = '"before" pattern not found, no changes made'
+        ret['result'] = True
+        return ret
 
     if __opts__['test']:
         ret['comment'] = 'File {0} is set to be updated'.format(name)
         ret['result'] = None
         return ret
+
     with salt.utils.fopen(name, 'rb') as fp_:
         slines = fp_.readlines()
+
     # should be ok now; perform the edit
     __salt__['file.sed'](name, before, after, limit, backup, options, flags)
+
     with salt.utils.fopen(name, 'rb') as fp_:
         nlines = fp_.readlines()
 
-    # check the result
-    ret['result'] = __salt__['file.contains_regex_multiline'](name, after)
     if slines != nlines:
         # Changes happened, add them
         ret['changes']['diff'] = ''.join(difflib.unified_diff(slines, nlines))
-
-    if ret['result']:
-        ret['comment'] = 'File successfully edited'
+        # Don't check the result -- sed is not designed to be able to check the
+        # result, because of backreferences and so forth.  Just report that sed
+        # was run, and assume it was successful (no error!)
+        ret['result'] = True
+        ret['comment'] = 'sed ran without error'
     else:
-        ret['comment'] = 'Expected edit does not appear in file'
-
-    # In this case, even if the `after` pattern doesn't appear in the file, we
-    # return True, as it's not necessarily an error
-    ret['result'] = True
+        ret['result'] = False
+        ret['comment'] = 'sed ran without error, but no changes were made'
 
     return ret
 
@@ -1424,7 +1456,8 @@ def comment(name, regex, char='#', backup='.bak'):
         nlines = fp_.readlines()
 
     # Check the result
-    ret['result'] = __salt__['file.contains_regex_multiline'](name, unanchor_regex)
+    ret['result'] = __salt__['file.contains_regex_multiline'](name,
+                                                              unanchor_regex)
 
     if slines != nlines:
         # Changes happened, add them
